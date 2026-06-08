@@ -1,0 +1,29 @@
+// libapsfixup — first-party APS / gralloc P010 plane-layout fix (sm8850 / infiniti).
+// Ported from spkal01's device_oneplus_dodge/apsfixup. Installed to /odm/lib64 and injected
+// as a DT_NEEDED of /odm/lib64/libAlgoProcess.so (extract-files.py .add_needed), so it loads
+// into com.oplus.camera with the Algo blob. See apsfixup.cpp header for the offsets/mechanics.
+
+cc_library_shared {
+    name: "libapsfixup",
+    srcs: ["apsfixup.cpp"],
+    shared_libs: ["liblog"],
+    header_libs: [],
+    device_specific: true,      // -> /odm/lib64
+    compile_multilib: "64",
+    cppflags: [
+        "-std=c++17",
+        "-Wall",
+        "-Wno-unused-parameter",
+        "-fno-exceptions",
+        "-fno-rtti",
+    ],
+    strip: {
+        none: true,
+    },
+    // The wrap_arc naked-asm trampoline references aps_repair_structs / aps_real_arc only
+    // from inline asm, which thin-LTO cannot see -> it would internalize/drop them
+    // ("undefined hidden symbol"). Disable LTO for this tiny interposer.
+    lto: {
+        never: true,
+    },
+}
