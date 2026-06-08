@@ -1660,6 +1660,152 @@ def blob_fixup_oplus_camera_framework_shims(ctx, file, file_path, *args, tmp_dir
             smali.write_text(fixed, encoding='utf-8')
 
 
+def blob_fixup_aiunit_authorize_camera(ctx, file, file_path, *args, tmp_dir=None, **kwargs):
+    # AIUnit gates every client through AIUnitServiceBinder.authorize(ParamPackage):
+    # it computes an "authorized" boolean in v9, and if v9 == 0 returns
+    # kErrorAuthorizeFail. On stock the calling package is trusted via the Oplus
+    # security framework (com.oplus.permission.safe.* + signature checks) that LOS
+    # does not have, so OplusCamera / the gallery never pass authorize and the AI
+    # engine refuses them. Whitelist our two first-party clients by name: right
+    # after v9 is finalised (the unique `:goto_2` + StringBuilder log site), force
+    # v9 = 1 when the calling package (v5) is com.oplus.camera or com.oneplus.gallery.
+    #
+    # Re-anchored for the .201 dump: the authorize method now keeps the auth flag in
+    # v9 (old fork keyed v5/v6 + a `:goto_3` + StringBuilder site that no longer
+    # exists). v9 is overwritten by the StringBuilder logging path immediately after,
+    # and v10 is reused as the StringBuilder, so borrowing v10 as the areEqual scratch
+    # is safe (it is re-defined by `new-instance v10` on the next line).
+    if tmp_dir is None:
+        return
+
+    smali = Path(tmp_dir) / 'smali_classes2/com/oplus/aiunit/core/AIUnitServiceBinder.smali'
+    if not smali.exists():
+        return
+    data = smali.read_text(encoding='utf-8')
+    old = (
+        '    :goto_2\n'
+        '    new-instance v10, Ljava/lang/StringBuilder;\n'
+    )
+    new = (
+        '    :goto_2\n'
+        '    const-string v10, "com.oplus.camera"\n'
+        '\n'
+        '    invoke-static {v5, v10}, Lkotlin/jvm/internal/Intrinsics;->areEqual(Ljava/lang/Object;Ljava/lang/Object;)Z\n'
+        '\n'
+        '    move-result v10\n'
+        '\n'
+        '    if-nez v10, :cond_oplus_aiunit_trusted_auth\n'
+        '\n'
+        '    const-string v10, "com.oneplus.gallery"\n'
+        '\n'
+        '    invoke-static {v5, v10}, Lkotlin/jvm/internal/Intrinsics;->areEqual(Ljava/lang/Object;Ljava/lang/Object;)Z\n'
+        '\n'
+        '    move-result v10\n'
+        '\n'
+        '    if-eqz v10, :cond_oplus_aiunit_auth\n'
+        '\n'
+        '    :cond_oplus_aiunit_trusted_auth\n'
+        '    const/4 v9, 0x1\n'
+        '\n'
+        '    :cond_oplus_aiunit_auth\n'
+        '    new-instance v10, Ljava/lang/StringBuilder;\n'
+    )
+    fixed = data.replace(old, new, 1)
+    if fixed != data:
+        smali.write_text(fixed, encoding='utf-8')
+
+    # AIUnitProvider gates ContentProvider clients through e() (authorizeByRemote),
+    # which reads the caller's com.oplus.aiunit.auth_style <meta-data> and returns a
+    # boolean. The gallery AI lane (#5) reaches AIUnit through this provider, so
+    # whitelist com.oplus.camera + com.oneplus.gallery here too: right after the
+    # non-null packageName guard (:cond_0), return true for either package. p0 is the
+    # provider `this`, returned as the Z result in the trusted branch (which ends in
+    # return, so reusing it is safe); v1 is the next-defined Context scratch in the
+    # fall-through path, so borrowing it for the areEqual result is safe.
+    provider = Path(tmp_dir) / 'smali_classes2/com/oplus/aiunit/AIUnitProvider.smali'
+    if provider.exists():
+        pdata = provider.read_text(encoding='utf-8')
+        pold = (
+            '    :cond_0\n'
+            '    invoke-virtual {p0}, Lcom/oplus/aiunit/base/component/BaseContentProvider;->a()Landroid/content/Context;\n'
+        )
+        pnew = (
+            '    :cond_0\n'
+            '    const-string v1, "com.oplus.camera"\n'
+            '\n'
+            '    invoke-static {v0, v1}, Lkotlin/jvm/internal/Intrinsics;->areEqual(Ljava/lang/Object;Ljava/lang/Object;)Z\n'
+            '\n'
+            '    move-result v1\n'
+            '\n'
+            '    if-nez v1, :cond_oplus_aiunit_provider_trusted\n'
+            '\n'
+            '    const-string v1, "com.oneplus.gallery"\n'
+            '\n'
+            '    invoke-static {v0, v1}, Lkotlin/jvm/internal/Intrinsics;->areEqual(Ljava/lang/Object;Ljava/lang/Object;)Z\n'
+            '\n'
+            '    move-result v1\n'
+            '\n'
+            '    if-eqz v1, :cond_oplus_aiunit_provider_check\n'
+            '\n'
+            '    :cond_oplus_aiunit_provider_trusted\n'
+            '    const/4 p0, 0x1\n'
+            '\n'
+            '    return p0\n'
+            '\n'
+            '    :cond_oplus_aiunit_provider_check\n'
+            '    invoke-virtual {p0}, Lcom/oplus/aiunit/base/component/BaseContentProvider;->a()Landroid/content/Context;\n'
+        )
+        pfixed = pdata.replace(pold, pnew, 1)
+        if pfixed != pdata:
+            provider.write_text(pfixed, encoding='utf-8')
+
+
+def blob_fixup_aiunit_plugin_so_permissions(ctx, file, file_path, *args, tmp_dir=None, **kwargs):
+    # AIUnit downloads editor plugins and unzips their JNI .so into its app-data dir
+    # (FileUtil.unzipSoFromPlugin), then System.load()s them. The unzip preserves the
+    # zip entry's mode, which leaves the extracted .so non-executable on LOS, so the
+    # subsequent load fails. Force the extracted file (v10) readable + executable right
+    # after the unzip call. The owner-only single-arg overloads suffice (AIUnit owns
+    # its plugin dir); v9 is dead between the unzip and the following `const/4 v9, 0x0`
+    # (it is re-defined there), so it is a verifier-safe scratch for the `true` const.
+    #
+    # Re-anchored for the .201 dump: FileUtil moved from com/oplus/orange/core/utils to
+    # com/oplus/orange/utils, and the .so path is now unzipSoFromPlugin (the hash-file
+    # unzip is a separate method) — anchored on the {v2,v9,v10} unzip call site.
+    if tmp_dir is None:
+        return
+
+    smali = Path(tmp_dir) / 'smali_classes2/com/oplus/orange/utils/FileUtil.smali'
+    if not smali.exists():
+        return
+    data = smali.read_text(encoding='utf-8')
+    old = (
+        '    invoke-static {v2, v9, v10}, Lcom/oplus/orange/utils/FileUtil;->unzip(Ljava/util/zip/ZipFile;Ljava/util/zip/ZipEntry;Ljava/io/File;)V\n'
+        '\n'
+        '    .line 218\n'
+        '    .line 219\n'
+        '    .line 220\n'
+        '    const/4 v9, 0x0\n'
+    )
+    new = (
+        '    invoke-static {v2, v9, v10}, Lcom/oplus/orange/utils/FileUtil;->unzip(Ljava/util/zip/ZipFile;Ljava/util/zip/ZipEntry;Ljava/io/File;)V\n'
+        '\n'
+        '    const/4 v9, 0x1\n'
+        '\n'
+        '    invoke-virtual {v10, v9}, Ljava/io/File;->setReadable(Z)Z\n'
+        '\n'
+        '    invoke-virtual {v10, v9}, Ljava/io/File;->setExecutable(Z)Z\n'
+        '\n'
+        '    .line 218\n'
+        '    .line 219\n'
+        '    .line 220\n'
+        '    const/4 v9, 0x0\n'
+    )
+    fixed = data.replace(old, new, 1)
+    if fixed != data:
+        smali.write_text(fixed, encoding='utf-8')
+
+
 # Blob fixups port (restored from the proven dirtyaf fork vendor_oplus_camera,
 # branch lineage-23.2-camera). LOS lacks the OnePlus/Oplus framework, so these
 # app-side shims let OplusCamera + the OCS SDK jars RUN and reach capture. They
@@ -1692,6 +1838,13 @@ blob_fixups: blob_fixups_user_type = {
         .call(blob_fixup_opluscamera_oppo_component_safe)
         .call(blob_fixup_opluscamera_uses_library)
         .call(blob_fixup_oplus_camera_system_properties)
+        .call(blob_fixup_oplus_camera_framework_shims)
+        .apktool_pack()
+        .stripzip(),
+    'system_ext/priv-app/AIUnit/AIUnit.apk': blob_fixup()
+        .call(blob_fixup_apktool_unpack_src)
+        .call(blob_fixup_aiunit_authorize_camera)
+        .call(blob_fixup_aiunit_plugin_so_permissions)
         .call(blob_fixup_oplus_camera_framework_shims)
         .apktool_pack()
         .stripzip(),

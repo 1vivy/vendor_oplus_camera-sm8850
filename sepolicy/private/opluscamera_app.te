@@ -9,6 +9,15 @@ binder_call(opluscamera_app, system_server)
 binder_call(opluscamera_app, surfaceflinger)
 binder_call(opluscamera_app, statsd)
 
+#  AIUnit on-device AI engine (runs in platform_app: re-signed, seinfo=platform).
+#  The camera's "include AI" path binds AIUnitServiceBinder and queries
+#  AIUnitProvider; both are app-to-app binder transactions. AIUnit authorizes the
+#  caller by package name (whitelisted to com.oplus.camera via the
+#  blob_fixup_aiunit_authorize_camera smali patch). Reverse direction (callbacks)
+#  is granted in platform_app.te. NOTE: validate the remaining AIUnit grants
+#  (plugin file/dmabuf/socket access) on-device under permissive, then tighten.
+binder_call(opluscamera_app, platform_app)
+
 #  Media / storage (same as platform_app)
 allow opluscamera_app mnt_media_rw_file:dir   r_dir_perms;
 allow opluscamera_app sdcard_type:dir         create_dir_perms;

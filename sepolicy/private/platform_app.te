@@ -8,3 +8,8 @@ allow platform_app vendor_hal_hexlp_server:fd use;
 # loads their JNI libraries from there.
 allow platform_app app_data_file:file { r_file_perms execute };
 auditallow platform_app app_data_file:file execute;
+
+# AIUnit (platform_app) callbacks into OplusCamera after the camera binds its AI
+# service — the reverse of binder_call(opluscamera_app, platform_app) in
+# opluscamera_app.te.
+binder_call(platform_app, opluscamera_app)
