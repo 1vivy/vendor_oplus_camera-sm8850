@@ -1,0 +1,22 @@
+diff --git a/smali/com/oplus/ocs/camera/producer/mode/BaseMode.smali b/smali/com/oplus/ocs/camera/producer/mode/BaseMode.smali
+--- a/smali/com/oplus/ocs/camera/producer/mode/BaseMode.smali
++++ b/smali/com/oplus/ocs/camera/producer/mode/BaseMode.smali
+@@ -27309,17 +27309,17 @@
+     throw p0
+
+     .line 709
+     :pswitch_1
+     invoke-static {}, Lcom/oplus/ocs/camera/common/util/Util;->isSystemCamera()Z
+
+     move-result p2
+
+-    if-nez p2, :cond_25
++    nop
+
+     invoke-virtual {p0, p3}, Lcom/oplus/ocs/camera/producer/mode/BaseMode;->useOplusCameraCase(Ljava/lang/String;)Z
+
+     move-result p2
+
+     if-eqz p2, :cond_25
+
+     .line 710
