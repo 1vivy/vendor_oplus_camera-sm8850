@@ -1468,7 +1468,20 @@ def blob_fixup_oplus_camera_framework_shims(ctx, file, file_path, *args, tmp_dir
                 '    return v0\n',
             )
 
-        if smali.match('*/a7/u3.smali'):
+        # TypeFaceUtil.a(Context)->Typeface: gut-replace the OnePlus custom-font
+        # resolver with `return Typeface.DEFAULT` (matches the proven dirtyaf fork
+        # 0001-Use-default-font patch). On LOS the OnePlus framework never populates
+        # OplusBaseConfiguration->mOplusExtraConfiguration, so the original body NPEs
+        # at the `->mFontVariationSettings:I` iget and crashes the camera on open
+        # (US-001) + the ai_hint OplusTextView inflate. SIGNATURE-ANCHORED by the
+        # method sig + the TypeFaceUtil fingerprint (OplusFontUtils->isFlipFontUsed)
+        # so it survives apktool re-obfuscation: committed apk = s7/m3, old fork was
+        # a7/u3 / l6/o3. Supersedes the line-anchored NPE-guard (the gut-replace
+        # never touches mOplusExtraConfiguration, so the NPE path is gone entirely).
+        if (
+            'public static a(Landroid/content/Context;)Landroid/graphics/Typeface;' in fixed
+            and 'Loplus/content/res/OplusFontUtils;->isFlipFontUsed:Z' in fixed
+        ):
             fixed = _replace_smali_method(
                 fixed,
                 'public static a(Landroid/content/Context;)Landroid/graphics/Typeface;',
@@ -1479,7 +1492,12 @@ def blob_fixup_oplus_camera_framework_shims(ctx, file, file_path, *args, tmp_dir
                 '    return-object v0\n',
             )
 
-        if smali.match('*/j3/a.smali'):
+        # Sibling Configuration->OplusExtraConfiguration accessor (old fork j3/a,
+        # committed apk o3/a): return null on LOS, where Configuration is never an
+        # OplusBaseConfiguration so there is no mOplusExtraConfiguration to hand back.
+        # SIGNATURE-ANCHORED by the return-type signature (the obfuscated class name
+        # is not stable across apk rebuilds).
+        if 'public static c(Landroid/content/res/Configuration;)Loplus/content/res/OplusExtraConfiguration;' in fixed:
             fixed = _replace_smali_method(
                 fixed,
                 'public static c(Landroid/content/res/Configuration;)Loplus/content/res/OplusExtraConfiguration;',
@@ -1648,12 +1666,12 @@ def blob_fixup_oplus_camera_framework_shims(ctx, file, file_path, *args, tmp_dir
 # are app-RUNTIME co-requisites, NOT the capture lever itself (identity stamp +
 # libalogencrypt + oemlayer + quickjpeg=0 + geometry, handled elsewhere).
 #
-# Static git patches (patches/, patches-opluscamera/) carry the fingerprint-
-# anchored IS_OPLUS_PACKAGE identity stamp (BaseMode, jar) and the TypeFaceUtil
-# OplusExtraConfiguration NPE guard (apk); the programmatic .call() fixups carry
-# the broad, content-addressed transforms (vendor-tag renames, wrapper-class
-# rewrites, SystemProperties rewrite, manifest <uses-library>/permission edits)
-# that cannot be expressed as line-anchored diffs.
+# Static git patches (patches/) carry the fingerprint-anchored IS_OPLUS_PACKAGE
+# identity stamp (BaseMode, jar); the programmatic .call() fixups carry the broad,
+# content-addressed transforms (the TypeFaceUtil/OplusExtraConfiguration default-font
+# gut-replace, vendor-tag renames, wrapper-class rewrites, SystemProperties rewrite,
+# manifest <uses-library>/permission edits) that cannot be expressed as line-anchored
+# diffs and would break under apktool re-obfuscation.
 #
 # Apply order per artifact: apktool unpack -> static patch_dir (anchored to the
 # pristine smali) -> programmatic transforms -> repack -> stripzip.
@@ -1671,7 +1689,6 @@ blob_fixups: blob_fixups_user_type = {
         .stripzip(),
     'system_ext/priv-app/OplusCamera/OplusCamera.apk': blob_fixup()
         .call(blob_fixup_apktool_unpack_full)
-        .patch_dir('patches-opluscamera')
         .call(blob_fixup_opluscamera_oppo_component_safe)
         .call(blob_fixup_opluscamera_uses_library)
         .call(blob_fixup_oplus_camera_system_properties)
@@ -1689,7 +1706,7 @@ namespace_imports = [
 
 # LOS-standard source/generated split:
 #   - SOURCE repo (this dir, vendor/oplus/camera-sm8850): extract-files.py,
-#     proprietary-files.txt, patches/, patches-opluscamera/, sepolicy/,
+#     proprietary-files.txt, patches/, sepolicy/,
 #     oplus-camera-stubs/, configs/, opluscamera.mk, SEPolicy.mk. The patch&pin
 #     layer; device_path/patch_dir resolve here (BlobFixupCtx(self.device_path)).
 #   - GENERATED repo (vendor/oplus/proprietary_vendor_oplus_camera-sm8850): the
