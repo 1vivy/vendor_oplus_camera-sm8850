@@ -99,8 +99,3 @@ my_stock/priv-app/VideoGallery/VideoGallery.apk:system_ext/priv-app/VideoGallery
 system_ext/priv-app/StdID/StdID.apk
 system/framework/oplus-services.jar;EXTRACT_ONLY
 system_ext/lib64/libHeifWinBufExchg-jni.so
-
-# Google Photos — independent of the OnePlus gallery; GApps may also provide it.
-# Presigned (keep the Google signing cert). Verifier: drop if it collides with a
-# GApps Photos package.
-my_product/app/Photos/Photos.apk:product/app/Photos/Photos.apk;PRESIGNED
