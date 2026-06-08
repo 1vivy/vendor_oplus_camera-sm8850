@@ -84,3 +84,23 @@ my_stock/priv-app/AIUnit/lib/arm64/libdatastore_shared_counter.so:system_ext/lib
 my_stock/priv-app/AIUnit/lib/arm64/libdmabufheap.so:system_ext/lib64/libdmabufheap.so;MODULE_SUFFIX=_aiunit;DISABLE_DEPS;SYMLINK=system_ext/priv-app/AIUnit/lib/arm64/libdmabufheap.so
 my_stock/priv-app/AIUnit/lib/arm64/libopencv_java4.so:system_ext/lib64/libopencv_java4.so;MODULE_SUFFIX=_aiunit;DISABLE_DEPS;SYMLINK=system_ext/priv-app/AIUnit/lib/arm64/libopencv_java4.so
 my_stock/priv-app/AIUnit/lib/arm64/libc++_shared.so:system_ext/lib64/libc++_shared.so;MODULE_SUFFIX=_aiunit;DISABLE_DEPS;SYMLINK=system_ext/priv-app/AIUnit/lib/arm64/libc++_shared.so
+
+# Gallery — OppoGallery2 (com.oneplus.gallery), the OnePlus stock gallery + its
+# OplusCamera/AIUnit retouch bridge (koaaN port, re-anchored to .201; see
+# docs/rearch/18b). Re-signed → platform_app. VideoGallery (com.coloros.video)
+# + StdID (OUID provider the gallery binds) + oplus-services.jar (EXTRACT_ONLY:
+# ships the oplus service classes the gallery references, no standalone module).
+# The 3 core HEIF libs are already listed in the Camera section above; this adds
+# the extra HEIF jni shim. The 6 QNN V81 libs are NOT listed here — they are
+# baked into the apk's lib/arm64-v8a by blob_fixup_oppogallery_op15_native_libs
+# (sourced from configs/lib64).
+my_stock/priv-app/OppoGallery2/OppoGallery2.apk:system_ext/priv-app/OppoGallery2/OppoGallery2.apk
+my_stock/priv-app/VideoGallery/VideoGallery.apk:system_ext/priv-app/VideoGallery/VideoGallery.apk
+system_ext/priv-app/StdID/StdID.apk
+system/framework/oplus-services.jar;EXTRACT_ONLY
+system_ext/lib64/libHeifWinBufExchg-jni.so
+
+# Google Photos — independent of the OnePlus gallery; GApps may also provide it.
+# Presigned (keep the Google signing cert). Verifier: drop if it collides with a
+# GApps Photos package.
+my_product/app/Photos/Photos.apk:product/app/Photos/Photos.apk;PRESIGNED

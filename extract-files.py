@@ -1806,6 +1806,147 @@ def blob_fixup_aiunit_plugin_so_permissions(ctx, file, file_path, *args, tmp_dir
         smali.write_text(fixed, encoding='utf-8')
 
 
+def blob_fixup_oppogallery_op15_native_libs(ctx, file, file_path, *args, tmp_dir=None, **kwargs):
+    # OppoGallery2's ODNN retouch (AI eraser etc.) declares + dlopens the QNN HTP
+    # runtime. The .201 apk still ships the V75/aiboost manifest entries, but SM8850
+    # .201 has NO /odm/lib64/aiboost dir — the QNN runtime is the V81 set, flat in
+    # /odm/lib64. Rewrite the manifest V75/aiboost uses-native-library block to the
+    # V81 flat names, and bake the 6 V81 libs (sourced into configs/lib64 from the
+    # dump's odm/lib64) into the apk's own lib/arm64-v8a so the gallery loads them by
+    # basename from its nativeLibraryDir on LOS. Ported verbatim from the koaaN fork
+    # (re-anchored: the .201 aiboost block matches the old `old` list).
+    if tmp_dir is None:
+        return
+
+    manifest = Path(tmp_dir) / 'AndroidManifest.xml'
+    data = manifest.read_text(encoding='utf-8') if manifest.exists() else ''
+    old = [
+        '        <uses-native-library android:name="/odm/lib64/aiboost/libaiboost.so" android:required="false"/>\n',
+        '        <uses-native-library android:name="/odm/lib64/aiboost/libaiboost_qnn_external_delegate.so" android:required="false"/>\n',
+        '        <uses-native-library android:name="/odm/lib64/aiboost/libQnnHtp.so" android:required="false"/>\n',
+        '        <uses-native-library android:name="/odm/lib64/aiboost/libQnnHtpPrepare.so" android:required="false"/>\n',
+        '        <uses-native-library android:name="/odm/lib64/aiboost/libQnnHtpV75Stub.so" android:required="false"/>\n',
+        '        <uses-native-library android:name="/odm/lib64/aiboost/libQnnSystem.so" android:required="false"/>\n',
+        '        <uses-native-library android:name="/odm/lib64/aiboost/libtransformer_lite.so" android:required="false"/>\n',
+        '        <uses-native-library android:name="/odm/lib64/Skel_signed/aiboost/libQnnHtpV75Skel.so" android:required="false"/>\n',
+        '        <uses-native-library android:name="/odm/lib64/aiboost/Skel_unsigned/libQnnHtpV75Skel.so" android:required="false"/>\n',
+    ]
+    new = [
+        '        <uses-native-library android:name="/odm/lib64/libQnnHtp.so" android:required="false"/>\n',
+        '        <uses-native-library android:name="/odm/lib64/libQnnHtpPrepare.so" android:required="false"/>\n',
+        '        <uses-native-library android:name="/odm/lib64/libQnnHtpV81Stub.so" android:required="false"/>\n',
+        '        <uses-native-library android:name="/odm/lib64/libQnnHtpV81CalculatorStub.so" android:required="false"/>\n',
+        '        <uses-native-library android:name="/odm/lib64/libQnnSaver.so" android:required="false"/>\n',
+        '        <uses-native-library android:name="/odm/lib64/libQnnSystem.so" android:required="false"/>\n',
+    ]
+
+    fixed = data
+    anchor = ''.join(line for line in old if line in fixed)
+    if anchor:
+        fixed = fixed.replace(anchor, ''.join(new))
+    elif new[-1] not in fixed:
+        insert_after = '        <uses-native-library android:name="libOpenCL.so" android:required="true"/>\n'
+        fixed = fixed.replace(insert_after, insert_after + ''.join(new))
+
+    if fixed != data:
+        manifest.write_text(fixed, encoding='utf-8')
+
+    lib_dir = Path(tmp_dir) / 'lib/arm64-v8a'
+    lib_dir.mkdir(parents=True, exist_ok=True)
+    source_dir = Path(__file__).resolve().parent / 'configs/lib64'
+    for lib in (
+        'libQnnHtp.so',
+        'libQnnHtpPrepare.so',
+        'libQnnHtpV81Stub.so',
+        'libQnnHtpV81CalculatorStub.so',
+        'libQnnSaver.so',
+        'libQnnSystem.so',
+    ):
+        shutil.copy2(source_dir / lib, lib_dir / lib)
+
+
+def blob_fixup_oppogallery_receiver_flags(ctx, file, file_path, *args, tmp_dir=None, **kwargs):
+    # A14+ requires every Context.registerReceiver for a non-system broadcast to
+    # pass RECEIVER_EXPORTED or RECEIVER_NOT_EXPORTED, else SecurityException crashes
+    # the app on A16. Force RECEIVER_NOT_EXPORTED (clear 0x2, set 0x4) on the gallery's
+    # AIUnit-vision broadcast manager. Re-anchored for .201: the receiver class moved
+    # from smali_classes8/.../ey.smali (koaaN, CPH2745) to smali_classes8/.../h14.smali,
+    # which has 3 registerReceiver(...Handler;I) call sites — site 1 keeps the flags in
+    # v9, sites 2+3 in v7.
+    if tmp_dir is None:
+        return
+
+    smali = Path(tmp_dir) / 'smali_classes8/com/oplus/aiunit/vision/h14.smali'
+    if not smali.exists():
+        return
+    data = smali.read_text(encoding='utf-8')
+    fixed = data
+    # Site 1: flags in v9 (invoke-virtual/range {v4 .. v9}).
+    fixed = fixed.replace(
+        '    move v9, p2\n'
+        '\n'
+        '    .line 275\n'
+        '    invoke-virtual/range {v4 .. v9}, Landroid/content/Context;->registerReceiver(Landroid/content/BroadcastReceiver;Landroid/content/IntentFilter;Ljava/lang/String;Landroid/os/Handler;I)Landroid/content/Intent;\n',
+        '    move v9, p2\n'
+        '\n'
+        '    and-int/lit8 v9, v9, -0x3\n'
+        '\n'
+        '    or-int/lit8 v9, v9, 0x4\n'
+        '\n'
+        '    .line 275\n'
+        '    invoke-virtual/range {v4 .. v9}, Landroid/content/Context;->registerReceiver(Landroid/content/BroadcastReceiver;Landroid/content/IntentFilter;Ljava/lang/String;Landroid/os/Handler;I)Landroid/content/Intent;\n',
+        1,
+    )
+    # Sites 2 + 3: flags in v7 (invoke-virtual/range {v2 .. v7}); identical, patch both.
+    fixed = fixed.replace(
+        '    invoke-virtual/range {v2 .. v7}, Landroid/content/Context;->registerReceiver(Landroid/content/BroadcastReceiver;Landroid/content/IntentFilter;Ljava/lang/String;Landroid/os/Handler;I)Landroid/content/Intent;\n',
+        '    and-int/lit8 v7, v7, -0x3\n'
+        '\n'
+        '    or-int/lit8 v7, v7, 0x4\n'
+        '\n'
+        '    invoke-virtual/range {v2 .. v7}, Landroid/content/Context;->registerReceiver(Landroid/content/BroadcastReceiver;Landroid/content/IntentFilter;Ljava/lang/String;Landroid/os/Handler;I)Landroid/content/Intent;\n',
+    )
+    if fixed != data:
+        smali.write_text(fixed, encoding='utf-8')
+
+
+def blob_fixup_oppogallery_safe_box(ctx, file, file_path, *args, tmp_dir=None, **kwargs):
+    # The gallery's feature-support query (hag.h(q26;Z)Boolean, a big sswitch over
+    # feature keys) resolves "feature_is_support_user_custom_safe_box" via hag.a1(),
+    # which reads an Oplus config absent on LOS and crashes the SafeBox path. Force the
+    # SafeBox-support case to return true (RESTORE stock behaviour). Re-anchored for
+    # .201: koaaN keyed mn4.f(String;ZZ)Z; the .201 class is
+    # smali_classes7/.../hag.smali (the safe_box key constant + the :cond_4b a1() check
+    # are the stable anchor — obfuscated class names drift, the feature-key string does
+    # not).
+    if tmp_dir is None:
+        return
+
+    smali = Path(tmp_dir) / 'smali_classes7/com/oplus/aiunit/vision/hag.smali'
+    if not smali.exists():
+        return
+    data = smali.read_text(encoding='utf-8')
+    old = (
+        '    :cond_4b\n'
+        '    invoke-virtual {p0}, Lcom/oplus/aiunit/vision/hag;->a1()Z\n'
+        '\n'
+        '    move-result p0\n'
+        '\n'
+        '    xor-int/2addr p0, v8\n'
+        '\n'
+        '    invoke-static {p0}, Ljava/lang/Boolean;->valueOf(Z)Ljava/lang/Boolean;\n'
+    )
+    new = (
+        '    :cond_4b\n'
+        '    const/4 p0, 0x1\n'
+        '\n'
+        '    invoke-static {p0}, Ljava/lang/Boolean;->valueOf(Z)Ljava/lang/Boolean;\n'
+    )
+    fixed = data.replace(old, new, 1)
+    if fixed != data:
+        smali.write_text(fixed, encoding='utf-8')
+
+
 # Blob fixups port (restored from the proven dirtyaf fork vendor_oplus_camera,
 # branch lineage-23.2-camera). LOS lacks the OnePlus/Oplus framework, so these
 # app-side shims let OplusCamera + the OCS SDK jars RUN and reach capture. They
@@ -1846,6 +1987,14 @@ blob_fixups: blob_fixups_user_type = {
         .call(blob_fixup_aiunit_authorize_camera)
         .call(blob_fixup_aiunit_plugin_so_permissions)
         .call(blob_fixup_oplus_camera_framework_shims)
+        .apktool_pack()
+        .stripzip(),
+    'system_ext/priv-app/OppoGallery2/OppoGallery2.apk': blob_fixup()
+        .call(blob_fixup_apktool_unpack_full)
+        .call(blob_fixup_opluscamera_uses_library)
+        .call(blob_fixup_oppogallery_op15_native_libs)
+        .call(blob_fixup_oppogallery_receiver_flags)
+        .call(blob_fixup_oppogallery_safe_box)
         .apktool_pack()
         .stripzip(),
 }  # fmt: skip
