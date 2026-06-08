@@ -1,3 +1,4 @@
-camera/*
+# Generated blobs + extract_utils mk moved to the split repo
+# vendor/oplus/proprietary_vendor_oplus_camera-sm8850 (camera/ no longer lives here).
 __pycache__/
 *.pyc

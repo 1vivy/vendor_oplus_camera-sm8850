@@ -65,5 +65,7 @@ $(call soong_config_set_bool,camera,override_format_from_reserved,true)
 # SEpolicy
 include vendor/oplus/camera-sm8850/sepolicy/SEPolicy.mk
 
-# Inherit from camera-vendor.mk
-$(call inherit-product, vendor/oplus/camera-sm8850/camera/camera-vendor.mk)
+# Inherit from camera-vendor.mk (generated blobs now live in the split repo
+# vendor/oplus/proprietary_vendor_oplus_camera-sm8850; this source repo keeps
+# only the patch&pin layer + opluscamera.mk + sepolicy).
+$(call inherit-product, vendor/oplus/proprietary_vendor_oplus_camera-sm8850/camera/camera-vendor.mk)

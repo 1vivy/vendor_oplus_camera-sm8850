@@ -1681,15 +1681,27 @@ blob_fixups: blob_fixups_user_type = {
 }  # fmt: skip
 
 namespace_imports = [
-    'vendor/oplus/camera-sm8850/camera',
+    'vendor/oplus/proprietary_vendor_oplus_camera-sm8850/camera',
     'vendor/oneplus/infiniti',
     'vendor/oneplus/sm8850-common',
     'hardware/oplus',
 ]
 
+# LOS-standard source/generated split:
+#   - SOURCE repo (this dir, vendor/oplus/camera-sm8850): extract-files.py,
+#     proprietary-files.txt, patches/, patches-opluscamera/, sepolicy/,
+#     oplus-camera-stubs/, configs/, opluscamera.mk, SEPolicy.mk. The patch&pin
+#     layer; device_path/patch_dir resolve here (BlobFixupCtx(self.device_path)).
+#   - GENERATED repo (vendor/oplus/proprietary_vendor_oplus_camera-sm8850): the
+#     raw extracted blobs (camera/proprietary/**) + extract_utils-generated
+#     camera/{Android.bp,Android.mk,camera-vendor.mk,BoardConfigVendor.mk}.
+# vendor_rel_path = 'vendor/<vendor>/<device>' = the generated mount path; the
+# 'camera' device sub-dir keeps the generated filenames (camera-vendor.mk) and
+# the camera/proprietary/ layout identical. device_rel_path stays the source
+# repo so proprietary-files.txt + patches/ resolve from here unchanged.
 module = ExtractUtilsModule(
     'camera',
-    'oplus/camera-sm8850',
+    'oplus/proprietary_vendor_oplus_camera-sm8850',
     device_rel_path='vendor/oplus/camera-sm8850',
     blob_fixups=blob_fixups,
     lib_fixups=lib_fixups,
