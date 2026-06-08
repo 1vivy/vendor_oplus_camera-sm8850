@@ -6,12 +6,23 @@ PRODUCT_PACKAGES += \
 # PRODUCT_BOOT_JARS += \
 #    oplus-framework
 
+# OPlus camera framework wrapper stubs (com.oplus.wrapper.*, OplusHeifWriter, etc.).
+# Shipped as a regular system_ext/framework shared library (NOT a boot jar) and
+# pulled into OplusCamera's classloader via <uses-library oplus.camera.stubs>
+# (declared in privapp-permissions-oplus.xml, injected into the app manifest by
+# blob_fixup_opluscamera_uses_library in extract-files.py). Keeping it OFF
+# PRODUCT_BOOT_JARS avoids baking app-only stubs into boot.art and scopes the
+# wrapper classes to just the app that needs them.
+PRODUCT_PACKAGES += \
+    oplus-camera-stubs
+
 # Init
 #PRODUCT_PACKAGES += \
 #    init.oplus.camera.rc
 
 # Permissions
 PRODUCT_COPY_FILES += \
+    $(LOCAL_PATH)/configs/permissions/com.oplus.android-features.xml:$(TARGET_COPY_OUT_SYSTEM_EXT)/etc/permissions/com.oplus.android-features.xml \
     $(LOCAL_PATH)/configs/permissions/oplus_google_lens_config.xml:$(TARGET_COPY_OUT_SYSTEM_EXT)/etc/permissions/oplus_google_lens_config.xml \
     $(LOCAL_PATH)/configs/permissions/privapp-permissions-oplus.xml:$(TARGET_COPY_OUT_SYSTEM_EXT)/etc/permissions/privapp-permissions-oplus.xml \
     $(LOCAL_PATH)/configs/sysconfig/hiddenapi-package-oplus-whitelist.xml:$(TARGET_COPY_OUT_SYSTEM)/etc/sysconfig/hiddenapi-package-oplus-whitelist.xml

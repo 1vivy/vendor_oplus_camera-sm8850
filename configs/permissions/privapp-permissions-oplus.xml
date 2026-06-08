@@ -2,11 +2,21 @@
 <permissions>
      <!-- OPLUS camera unit sdk adapter -->
      <library name = "com.oplus.camera.unit.sdk.adapter"
-        file = "/system_ext/framework/com.oplus.camera.unit.sdk.adapter.jar" />
+        file = "/system_ext/framework/com.oplus.camera.unit.sdk.adapter.jar"
+        dependency = "oplus.camera.stubs" />
 
-     <!-- OPLUS camera unit sdk -->
+     <!-- OPLUS camera unit sdk.
+          dependency=oplus.camera.stubs so the SDK's own classloader can resolve the
+          com.oplus.wrapper.* shims it loads reflectively (e.g. ApsAdapterLog ->
+          com.oplus.wrapper.os.Trace). Sibling shared libraries are otherwise isolated. -->
      <library name = "com.oplus.camera.unit.sdk"
-        file = "/system_ext/framework/com.oplus.camera.unit.sdk.jar" />
+        file = "/system_ext/framework/com.oplus.camera.unit.sdk.jar"
+        dependency = "oplus.camera.stubs" />
+
+     <!-- OPlus camera framework wrapper stubs (com.oplus.wrapper.*, OplusHeifWriter...).
+          Off the bootclasspath; pulled into OplusCamera via <uses-library oplus.camera.stubs>. -->
+     <library name="oplus.camera.stubs"
+        file="/system_ext/framework/oplus-camera-stubs.jar"/>
 
      <!-- OPLUS appplatform -->
      <privapp-permissions package="com.oplus.appplatform">
@@ -38,6 +48,9 @@
         <permission name="android.permission.WRITE_MEDIA_STORAGE"/>
         <permission name="android.permission.WRITE_SECURE_SETTINGS"/>
         <permission name="android.permission.SUBSCRIBE_TO_KEYGUARD_LOCKED_STATE"/>
+        <permission name="oplus.permission.OPLUS_COMPONENT_SAFE"/>
+        <permission name="oppo.permission.OPPO_COMPONENT_SAFE"/>
+        <permission name="com.oplus.permission.safe.CAMERA"/>
      </privapp-permissions>
 
     <!-- OPLUS gallery -->
