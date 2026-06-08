@@ -65,9 +65,23 @@ lib_fixups: lib_fixups_user_type = {
 # apktool decodes/rebuilds the framework jar the same way it does an APK;
 # patches/ is fingerprint-anchored (8 lines of context, label/instruction
 # neighborhood), not line-number based.
+# TypeFaceUtil NPE guard (US-001 camera-open crash + ai_hint_layout
+# InflateException). On LineageOS the OnePlus framework does not populate
+# OplusBaseConfiguration.mOplusExtraConfiguration, so the custom-font path NPEs;
+# the existing try only catches NoSuchField/NoSuchMethodError, so it escapes.
+# The patch adds a NullPointerException catch routing to the existing
+# Typeface.DEFAULT fallback (:catch_0) -- OOS-faithful, not a force/disable.
+# OplusTextView.<init> calls this same method, so it ALSO fixes the AI-scene
+# ai_hint_layout inflate crash. Separate patches-opluscamera/ dir because
+# apktool_patch git-applies every patch in the dir to its bound artifact; the
+# jar patch and the apk patch target different smali trees. Patch is
+# fingerprint-anchored (OplusFontUtils.isFlipFontUsed + the sibling catches),
+# not line-number based.
 blob_fixups: blob_fixups_user_type = {
     'system_ext/framework/com.oplus.camera.unit.sdk.jar': blob_fixup()
         .apktool_patch('patches'),
+    'system_ext/priv-app/OplusCamera/OplusCamera.apk': blob_fixup()
+        .apktool_patch('patches-opluscamera'),
 }  # fmt: skip
 
 namespace_imports = [

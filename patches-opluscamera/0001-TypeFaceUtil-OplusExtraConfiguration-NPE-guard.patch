@@ -1,0 +1,33 @@
+From: OP15 infiniti camera port
+Subject: [PATCH] TypeFaceUtil: catch NPE from absent OplusBaseConfiguration.mOplusExtraConfiguration
+
+OOS-restore (facilitation, contract-gap closer). On a OnePlus device the
+custom font path resolves Configuration -> OplusBaseConfiguration ->
+mOplusExtraConfiguration -> mFontVariationSettings. On LineageOS the OnePlus
+framework does not populate mOplusExtraConfiguration, so the iget at the
+"->mFontVariationSettings:I" read NPEs. The existing try only catches
+NoSuchFieldError / NoSuchMethodError, so the NullPointerException escapes and
+crashes the camera on open (US-001), and -- because OplusTextView.<init> calls
+this same TypeFaceUtil method -- it also surfaces as the ai_hint_layout
+InflateException when the AI-scene hint UI inflates OplusTextView.
+
+The :catch_0 handler already falls back to Typeface.DEFAULT (the same graceful
+result OnePlus yields when the extra-config is absent), so routing
+NullPointerException to it restores OOS behaviour without forcing or disabling
+the custom-font path.
+
+Anchor: fingerprint on the field ref
+"Loplus/content/res/OplusFontUtils;->isFlipFontUsed:Z" followed by the existing
+NoSuchFieldError/NoSuchMethodError catches to :catch_0 (structural, not line
+numbers). Class s7/m3 is apktool's deterministic obfuscation of TypeFaceUtil
+for the committed OplusCamera.apk; regenerate if the APK is updated.
+--- a/smali/s7/m3.smali
++++ b/smali/s7/m3.smali
+@@ -347,6 +347,7 @@
+     :try_end_0
+     .catch Ljava/lang/NoSuchFieldError; {:try_start_0 .. :try_end_0} :catch_0
+     .catch Ljava/lang/NoSuchMethodError; {:try_start_0 .. :try_end_0} :catch_0
++    .catch Ljava/lang/NullPointerException; {:try_start_0 .. :try_end_0} :catch_0
+ 
+     .line 40
+     .line 41
