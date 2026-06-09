@@ -2030,6 +2030,81 @@ def blob_fixup_oplus_camera_gallery_handoff(ctx, file, file_path, *args, tmp_dir
         smali.write_text(data, encoding='utf-8')
 
 
+def blob_fixup_oplus_camera_preview_hdr_sdr(ctx, file, file_path, *args, tmp_dir=None, **kwargs):
+    # Force the preview to render SDR (fix the over-exposed/orange/blown-out preview).
+    #
+    # On the .201 app (6.070.71) the PREVIEW is configured as an HDR (HLG) surface:
+    # PreviewHDRControl (tk/g0) sets the preview SurfaceView's buffer dataspace to
+    # DATASPACE_BT2020_HLG via NativeWindowJNI.setNativeWindowBufferDataSpace AND requests
+    # a 5.0 HDR/SDR headroom via SurfaceView.setDesiredHdrHeadroom(BaseMode.i9()F =
+    # config "preview.hdr.brightness.ratio"). dumpsys SurfaceFlinger: numHdrLayers(1)
+    # desiredRatio(5.00). The LOS panel runs ColorMode::SRGB with no OPlus HDR display /
+    # HLG->SDR EOTF tonemap path, so the 10-bit HLG preview composited on an SDR display
+    # reads as ~5x too bright / wrong colour. On-device proof: dropping the headroom to
+    # 1.0 (desiredRatio 5.00->1.00) did NOT fix it -> the DOMINANT cause is the HLG
+    # DATASPACE, not the headroom. The JPEG is fine (tonemapped provider-side). 6.106
+    # never enables HDR preview -> always-SDR -> correct.
+    #
+    # Real OOS fix = port the OPlus HDR display/tonemap path to LOS. Pragmatic match-6.106
+    # = disable the HDR-preview CAPABILITY so the preview stays an SDR (sRGB) surface:
+    #   (1) force the gate `com.oplus.camera.preview.hdr.support` to FALSE at its read
+    #       sites. In PreviewHDRControl (tk/g0) this is field `c` (== j()), which gates the
+    #       dataspace setup (setNativeWindowBufferDataSpace), the headroom, and the HDR
+    #       runtime state; forcing it false keeps the preview SurfaceView sRGB ->
+    #       numHdrLayers 0. (Anchored on the config-key string + the CameraConfig boolean
+    #       read shape, NOT R8 names.)
+    #   (2) belt: force BaseMode.i9()F -> 1.0f (headroom 1.0) for any residual consumer.
+    # Both edits are preview-only; capture/JPEG untouched. Idempotent.
+    if tmp_dir is None:
+        return
+
+    # (1) preview.hdr.support read -> 0  (const-string KEY; CameraConfig.b/getConfigBooleanValue; move-result T -> force T=0)
+    support_key = '"com.oplus.camera.preview.hdr.support"'
+    support_re = re.compile(
+        r'(const-string (\w+), ' + re.escape(support_key) + r'\n'
+        r'(?:\s*\.line[^\n]*\n|\s*\n)*'
+        r'\s*invoke-static \{\2(?:, \w+)?\}, Lcom/oplus/camera/configure/CameraConfig;->'
+        r'(?:b|getConfigBooleanValue)\([^)]*\)Z\n'
+        r'(?:\s*\.line[^\n]*\n|\s*\n)*'
+        r'\s*move-result (\w+)\n)'
+    )
+
+    def _support_repl(m):
+        if 'op15_no_preview_hdr' in m.group(0):
+            return m.group(0)
+        return m.group(1) + f'    # op15_no_preview_hdr\n    const/4 {m.group(3)}, 0x0\n'
+
+    # (2) BaseMode.i9()F (the headroom-ratio getter) -> return 1.0f
+    ratio_key = '"com.oplus.camera.preview.hdr.brightness.ratio"'
+    ratio_re = re.compile(
+        r'(?ms)^(\.method[^\n]*\(\)F\n)(\s*\.(?:registers|locals) \d+\n)(.*?)^\.end method'
+    )
+
+    def _ratio_repl(m):
+        if ratio_key not in m.group(3):
+            return m.group(0)
+        if 'op15_preview_sdr' in m.group(3):
+            return m.group(0)
+        return (
+            m.group(1)
+            + '    .locals 1\n\n'
+            + '    # op15_preview_sdr: force SDR preview headroom (ratio 1.0)\n'
+            + '    const/high16 v0, 0x3f800000\n\n'
+            + '    return v0\n'
+            + '.end method'
+        )
+
+    for smali in Path(tmp_dir).glob('smali*/**/*.smali'):
+        data = smali.read_text(encoding='utf-8')
+        fixed = data
+        if support_key in fixed:
+            fixed = support_re.sub(_support_repl, fixed)
+        if ratio_key in fixed:
+            fixed = ratio_re.sub(_ratio_repl, fixed)
+        if fixed != data:
+            smali.write_text(fixed, encoding='utf-8')
+
+
 def blob_fixup_aiunit_authorize_camera(ctx, file, file_path, *args, tmp_dir=None, **kwargs):
     # AIUnit gates every client through AIUnitServiceBinder.authorize(ParamPackage):
     # it computes an "authorized" boolean in v9, and if v9 == 0 returns
@@ -2356,6 +2431,7 @@ blob_fixups: blob_fixups_user_type = {
         .call(blob_fixup_oplus_camera_blur_npe_guard)
         .call(blob_fixup_oplus_camera_surface_transaction_getapply)
         .call(blob_fixup_oplus_camera_gallery_handoff)
+        .call(blob_fixup_oplus_camera_preview_hdr_sdr)
         .apktool_pack()
         .stripzip(),
     'system_ext/priv-app/AIUnit/AIUnit.apk': blob_fixup()
