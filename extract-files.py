@@ -143,11 +143,10 @@ def blob_fixup_opluscamera_oppo_component_safe(ctx, file, file_path, *args, tmp_
 
 
 def blob_fixup_opluscamera_uses_library(ctx, file, file_path, *args, tmp_dir=None, **kwargs):
-    # The com.oplus.wrapper.* / OplusHeifWriter classes the app references live in
-    # oplus-framework.jar (BOOTCLASSPATH) on stock. We ship them instead as the
-    # off-bootclasspath shared library "oplus.camera.stubs" (oplus-camera-stubs.jar in
-    # /system_ext/framework, declared in privapp-permissions-oplus.xml). For the app's
-    # own classloader to resolve them, the app must declare <uses-library> for it.
+    # Text-manifest variant (for apks unpacked with a full apktool decode, e.g.
+    # OppoGallery2.apk). OplusCamera.apk uses the binary-AXML variant
+    # (blob_fixup_opluscamera_manifest_axml) because it is unpacked --no-res. See the
+    # com.oplus.wrapper.* / oplus.camera.stubs rationale on that function.
     if tmp_dir is None:
         return
 
@@ -159,6 +158,66 @@ def blob_fixup_opluscamera_uses_library(ctx, file, file_path, *args, tmp_dir=Non
     if '</application>' in data:
         data = data.replace('</application>', entry + '    </application>', 1)
         manifest.write_text(data, encoding='utf-8')
+
+
+def blob_fixup_opluscamera_manifest_axml(ctx, file, file_path, *args, tmp_dir=None, **kwargs):
+    # Resource-faithful manifest patch (binary AXML, via pyaxml).
+    #
+    # The OplusCamera.apk is unpacked with apktool --no-res (blob_fixup_apktool_unpack_src)
+    # so resources.arsc is kept RAW and copied back verbatim on build. This is REQUIRED:
+    # a full apktool decode rebuilds resources.arsc with legacy aapt, which drops the
+    # non-default locale config rows (camera renders zh on an en device) AND renumbers
+    # app resource IDs (FileProvider @xml ref breaks). Keeping resources.arsc byte-identical
+    # to stock also preserves the AE/HDR/tuning config rows (a full-decode rebuild blew out
+    # preview highlights). Verified with aapt2: resources.arsc stays byte-identical and the
+    # added <uses-library> is recognized.
+    #
+    # Cost of --no-res: AndroidManifest.xml stays BINARY (apktool only decodes the manifest
+    # to text when it also decodes resources). So we patch the binary AXML directly to add
+    # the two entries the LOS port needs, replacing the old text-based uses_library +
+    # oppo_component_safe fixups:
+    #   - <uses-library oplus.camera.stubs required=false>: the com.oplus.wrapper.* /
+    #     com.oplus.flexiblewindow.* classes live in oplus-framework.jar (BOOTCLASSPATH) on
+    #     stock; we ship them as the off-bootclasspath shared lib oplus.camera.stubs
+    #     (oplus-camera-stubs.jar, declared in privapp-permissions-oplus.xml), so the app's
+    #     own classloader needs this <uses-library> to resolve them.
+    #   - <uses-permission oppo.permission.OPPO_COMPONENT_SAFE> (legacy component-safe perm).
+    # Idempotent (skips if oplus.camera.stubs is already declared). NB: requires pyaxml
+    # (pip install pyaxml) in the extract environment.
+    if tmp_dir is None:
+        return
+
+    import pyaxml
+    from lxml import etree
+
+    ANDROID = 'http://schemas.android.com/apk/res/android'
+    manifest = Path(tmp_dir) / 'AndroidManifest.xml'
+    if not manifest.exists():
+        return
+
+    axml = pyaxml.AXML.from_axml(manifest.read_bytes())
+    root = axml.to_xml()
+    app = root.find('application')
+    changed = False
+    if app is not None and not any(
+        e.get(f'{{{ANDROID}}}name') == 'oplus.camera.stubs'
+        for e in app.findall('uses-library')
+    ):
+        ul = etree.SubElement(app, 'uses-library')
+        ul.set(f'{{{ANDROID}}}name', 'oplus.camera.stubs')
+        ul.set(f'{{{ANDROID}}}required', 'false')
+        changed = True
+    if not any(
+        e.get(f'{{{ANDROID}}}name') == 'oppo.permission.OPPO_COMPONENT_SAFE'
+        for e in root.findall('uses-permission')
+    ):
+        up = etree.SubElement(root, 'uses-permission')
+        up.set(f'{{{ANDROID}}}name', 'oppo.permission.OPPO_COMPONENT_SAFE')
+        changed = True
+    if changed:
+        out = pyaxml.AXML()
+        out.from_xml(root)
+        manifest.write_bytes(out.pack())
 
 
 def blob_fixup_oplus_camera_system_properties(ctx, file, file_path, *args, tmp_dir=None, **kwargs):
@@ -2286,9 +2345,11 @@ blob_fixups: blob_fixups_user_type = {
         .apktool_pack()
         .stripzip(),
     'system_ext/priv-app/OplusCamera/OplusCamera.apk': blob_fixup()
-        .call(blob_fixup_apktool_unpack_full)
-        .call(blob_fixup_opluscamera_oppo_component_safe)
-        .call(blob_fixup_opluscamera_uses_library)
+        # --no-res: keep resources.arsc raw (faithful locale/AE-HDR config + stable resource
+        # IDs); smali is still decoded for the dex fixups; manifest stays binary and is
+        # patched via pyaxml in blob_fixup_opluscamera_manifest_axml.
+        .call(blob_fixup_apktool_unpack_src)
+        .call(blob_fixup_opluscamera_manifest_axml)
         .call(blob_fixup_oplus_camera_system_properties)
         .call(blob_fixup_oplus_camera_framework_shims)
         .call(blob_fixup_oplus_camera_typeface_default)
