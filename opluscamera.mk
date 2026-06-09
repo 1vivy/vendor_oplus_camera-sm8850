@@ -1,3 +1,12 @@
+# 16KB page-size: the prebuilt OEM camera JNI blobs (libAPSClient-*, libAncFilter_jni,
+# libApsSuperEISPreviewJni, libCombineLut, ...) are 4KB-segment-aligned, as shipped by
+# OnePlus in OOS .201. A16 enforces a 16384 max-page-size check on prebuilts by default,
+# but infiniti runs 4KB pages (OOS loads these exact blobs) and declares no 16KB support,
+# so the check is forward-compat strictness, not a runtime requirement. We cannot realign
+# prebuilts (no source). Disable the prebuilt max-page-size check (build's own recommended
+# fix). Every alignment failure is one of our camera blobs — no collateral on other prebuilts.
+PRODUCT_CHECK_PREBUILT_MAX_PAGE_SIZE := false
+
 # Blob dependencies
 PRODUCT_PACKAGES += \
     android.hardware.graphics.common-V3-ndk.vendor

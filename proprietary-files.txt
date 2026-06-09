@@ -64,7 +64,6 @@ my_product/etc/camera/engineer_camera_config.json:product/etc/camera/engineer_ca
 system_ext/lib64/liboplushwui_jni.so
 
 # Oplus Camera Services & AI (OSense)
-system_ext/lib64/libcsextimpl.so
 system/lib64/vendor.oplus.hardware.sendextcamcmd-V2-ndk.so:system_ext/lib64/vendor.oplus.hardware.sendextcamcmd-V2-ndk.so;MODULE_SUFFIX=_system_ext
 
 # AIUnit — on-device AI engine (Oplus AIUnit). Hosts the AI scene/feature
