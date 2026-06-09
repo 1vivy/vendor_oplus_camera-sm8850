@@ -1707,6 +1707,57 @@ def blob_fixup_oplus_camera_typeface_default(ctx, file, file_path, *args, tmp_di
             smali.write_text(fixed, encoding='utf-8')
 
 
+def blob_fixup_oplus_camera_blur_npe_guard(ctx, file, file_path, *args, tmp_dir=None, **kwargs):
+    # OplusBlurProcess: null-guard the static int[] read (portrait + front-camera NPE).
+    #
+    # PORTRAIT > flip-to-selfie crashes with "java.lang.NullPointerException: Attempt to read
+    # from null array" at OplusBlurProcess.<m>(II)Z (FATAL on BlurPreviewHandlerThread), and
+    # cannot restart (relaunch re-enters portrait+front and re-hits it). The class caches a
+    # static `int[]` (R8 name e.g. `w`) populated via OplusBlurPreviewHelper, which returns null
+    # on the LOS portrait+front path; the (II)Z init then does `sget-object`+`aget` on it
+    # unguarded. Guard each static-int[] read: if null, bail with `monitor-exit` (the method is
+    # declared-synchronized) + `return false` — blur-init-failed, so the caller skips the live
+    # blur preview (graceful degrade, same philosophy as the TypeFaceUtil default-font fix).
+    #
+    # Anchored by `.source "OplusBlurProcess.java"` + the synchronized (II)Z method shape and the
+    # static `[I` read — NOT the R8 names — so it survives re-obfuscation. Idempotent.
+    if tmp_dir is None:
+        return
+
+    read_re = re.compile(r'sget-object (v\d+), L[^;]+;->\w+:\[I')
+
+    for smali in Path(tmp_dir).glob('smali*/**/*.smali'):
+        data = smali.read_text(encoding='utf-8')
+        if '.source "OplusBlurProcess.java"' not in data:
+            continue
+        if ':aps_wnull' in data:
+            continue  # already guarded
+        changed = False
+        out = []
+        last = 0
+        for mm in re.finditer(r'(\.method [^\n]*\(II\)Z\n)(.*?)(\n\.end method)', data, re.DOTALL):
+            body = mm.group(2)
+            if not read_re.search(body):
+                continue
+            vL = re.search(r'monitor-exit (v\d+)', body)
+            vR = re.search(r'\n\s*return (v\d+)', body)
+            if not (vL and vR):
+                continue  # not the synchronized bool init we expect — leave untouched
+            vL, vR = vL.group(1), vR.group(1)
+            guarded = read_re.sub(
+                lambda m: f'{m.group(0)}\n\n    if-eqz {m.group(1)}, :aps_wnull', body
+            )
+            guarded += (f'\n\n    :aps_wnull\n    const/16 {vR}, 0x0\n\n'
+                        f'    monitor-exit {vL}\n\n    return {vR}')
+            out.append(data[last:mm.start()])
+            out.append(mm.group(1) + guarded + mm.group(3))
+            last = mm.end()
+            changed = True
+        if changed:
+            out.append(data[last:])
+            smali.write_text(''.join(out), encoding='utf-8')
+
+
 def blob_fixup_aiunit_authorize_camera(ctx, file, file_path, *args, tmp_dir=None, **kwargs):
     # AIUnit gates every client through AIUnitServiceBinder.authorize(ParamPackage):
     # it computes an "authorized" boolean in v9, and if v9 == 0 returns
@@ -2028,6 +2079,7 @@ blob_fixups: blob_fixups_user_type = {
         .call(blob_fixup_oplus_camera_system_properties)
         .call(blob_fixup_oplus_camera_framework_shims)
         .call(blob_fixup_oplus_camera_typeface_default)
+        .call(blob_fixup_oplus_camera_blur_npe_guard)
         .apktool_pack()
         .stripzip(),
     'system_ext/priv-app/AIUnit/AIUnit.apk': blob_fixup()
