@@ -69,6 +69,26 @@ static constexpr const char* LIB_PROCESS   = "libAlgoProcess.so";
 static constexpr const char* LIB_INTERFACE = "libAlgoInterface.so";
 static constexpr const char* ARC_SYMBOL    = "ARC_Turbo_RAW_Process";
 
+// ── doc 28 Family C-2: super-night ArcSoft engine (dlsym'd by libAlgoInterface @0x1770e8) ──
+// Same Gralloc5 non-contiguous P010 garbage-plane root as ARC_Turbo_RAW_Process; repair its
+// input structs at the dlsym'd entry point before the ArcSoft engine consumes them.
+static constexpr const char* ARC_SYMBOL_TFRSN = "ARC_TFRSN_Process";
+
+// ── doc 28 Family B (WORKAROUND): strlen@LIBC JUMP_SLOT in libAlgoInterface.so ──────────────
+// readelf -rW /tmp/blobs/libAlgoInterface.so | grep strlen :
+//   0000000001bb6888  ... R_AARCH64_JUMP_SLOT  strlen@LIBC + 0
+static constexpr uintptr_t STRLEN_GOT_OFF = 0x1bb6888;  // libAlgoInterface.so strlen JUMP_SLOT
+
+// ── doc 28 Family A (WORKAROUND skeleton, NEEDS-PROBE): dlsym@LIBC JUMP_SLOT in libAlgoProcess ──
+// readelf -rW /tmp/blobs/libAlgoProcess.so | grep dlsym :
+//   0000000000686c88  ... R_AARCH64_JUMP_SLOT  dlsym@LIBC + 0
+static constexpr uintptr_t ALGOPROC_DLSYM_GOT_OFF = 0x686c88;  // libAlgoProcess.so dlsym JUMP_SLOT
+// NEEDS-PROBE: "OGLBasicToneProcess" is NOT a dlsym string in libAlgoProcess.so (it lives in
+// libBasicTonePhoto.so @0x53984 and is reached via PLT/DT_NEEDED, not a by-name dlsym from
+// libAlgoProcess). So this exact-name match will NOT fire until a frida probe identifies the real
+// resolution path (and the ctx->Image* offset). The hook is installed but behaviourally inert.
+static constexpr const char* OGLTONE_SYMBOL = "OGLBasicToneProcess";
+
 // ── real function pointers (filled by the GOT redirects) ──────────────────────────────────
 using p010_fn_t  = void (*)(uint16_t*, uint16_t*, uint32_t, uint32_t, uint32_t, uint32_t);
 using dlsym_fn_t = void* (*)(void*, const char*);
@@ -78,15 +98,28 @@ static p010_fn_t  g_real_p010  = nullptr;
 // preemptible global would force a GOT reference the naked asm doesn't emit). `used` because
 // it is referenced ONLY from inline asm, which LTO cannot see (would otherwise drop it).
 extern "C" __attribute__((visibility("hidden"), used)) void* aps_real_arc = nullptr;
+// Family C-2: real ARC_TFRSN_Process pointer (tail-called from the wrap_arc_tfrsn naked asm).
+extern "C" __attribute__((visibility("hidden"), used)) void* aps_real_tfrsn = nullptr;
 static dlsym_fn_t g_real_dlsym = nullptr;
 
 // copyMetadata(camera_metadata const*) -> camera_metadata* (heap copy, or null)
 using copymeta_fn_t = void* (*)(const void*);
 static copymeta_fn_t g_real_copymeta = nullptr;
 
-static bool g_done_p010     = false;
-static bool g_done_dlsym    = false;
-static bool g_done_copymeta = false;
+// Family B: real strlen (null-safe wrapper tail-calls it for non-null args)
+using strlen_fn_t = size_t (*)(const char*);
+static strlen_fn_t g_real_strlen = nullptr;
+
+// Family A: real OGLBasicToneProcess + libAlgoProcess dlsym (skeleton, needs-probe)
+using ogltone_fn_t = int (*)(void*);
+static ogltone_fn_t g_real_ogltone = nullptr;
+static dlsym_fn_t   g_real_algoproc_dlsym = nullptr;
+
+static bool g_done_p010          = false;
+static bool g_done_dlsym         = false;
+static bool g_done_copymeta      = false;
+static bool g_done_strlen        = false;
+static bool g_done_algoproc_dlsym = false;
 
 // ── /proc/self/maps range lookup: the mapping [base,base+size) containing addr ─────────────
 static bool range_of(uint64_t addr, uint64_t* base, uint64_t* size) {
@@ -108,17 +141,48 @@ static bool range_of(uint64_t addr, uint64_t* base, uint64_t* size) {
     return found;
 }
 
-// valid camera buffer VA: high 32 bits in 0x70..0x7f and a sane low offset
+// ── /proc/self/maps writability check (doc 28 Family A) ─────────────────────────────────────
+// range_of() alone is INSUFFICIENT for Family A: the BasicTone fault page IS mapped, but PROT_READ
+// only (it is the read-only .text of an APK-bundled .so that Image->field_0x38 stalely points at
+// after AHardwareBuffer_lock fails on A16/mapper@4). We must verify the byte is in a writable VMA.
+// Returns true only when 'addr' falls in a mapping whose perms have 'w'.
+static bool mapping_is_writable(uint64_t addr) {
+    addr &= 0x00ffffffffffffffULL;   // strip AArch64 TBI top-byte tag (Scudo/MTE)
+    FILE* f = fopen("/proc/self/maps", "re");
+    if (!f) return false;
+    char line[512];
+    bool writable = false;
+    while (fgets(line, sizeof(line), f)) {
+        uint64_t lo = 0, hi = 0;
+        char perms[8] = {0};
+        if (sscanf(line, "%" SCNx64 "-%" SCNx64 " %7s", &lo, &hi, perms) != 3) continue;
+        if (addr >= lo && addr < hi) {
+            writable = (perms[1] == 'w');
+            break;
+        }
+    }
+    fclose(f);
+    return writable;
+}
+
+// valid camera buffer VA: high 32 bits in 0x60..0x7f and a sane low offset.
+// doc 28 Family C-1: widened from [0x70,0x7f] to [0x60,0x7f]. tombstone_42 shows the live
+// dmabuf luma at 0x6d43e00000 (hi=0x6d) and the garbage chroma at 0x6e00000000 (hi=0x6e);
+// super-night lands ~0x6c — all missed by the old [0x70,0x7f] window. hi∈[0x60,0x6f] is still
+// user-space VA on AArch64 (top bit clear, well below the kernel split); the lo>=0x100000 guard
+// still excludes tiny/null pointers. ASSUMPTION (documented): no VALID gralloc buffer VA lands in
+// hi 0x60..0x6f with lo<0x100000 — a valid buffer always carries a non-trivial page offset, while
+// the garbage chroma is align_up(luma,0) i.e. lo32==0. Holds for every observed capture buffer.
 static inline bool is_buf(uint64_t v) {
     uint32_t hi = (uint32_t)(v >> 32);
     uint32_t lo = (uint32_t)(v & 0xffffffffULL);
-    return hi >= 0x70 && hi <= 0x7f && lo >= 0x100000;
+    return hi >= 0x60 && hi <= 0x7f && lo >= 0x100000;
 }
 // garbage chroma ptr: same high range, but a tiny/zeroed low part (align_up(luma,0) etc.)
 static inline bool is_garbage(uint64_t v) {
     uint32_t hi = (uint32_t)(v >> 32);
     uint32_t lo = (uint32_t)(v & 0xffffffffULL);
-    return hi >= 0x70 && hi <= 0x7f && lo < 0x100000;
+    return hi >= 0x60 && hi <= 0x7f && lo < 0x100000;
 }
 
 // ── GOT/PLT JUMP_SLOT redirect (relro: mprotect RW, overwrite data ptr, mprotect RO) ──────
@@ -193,14 +257,45 @@ extern "C" __attribute__((naked, visibility("hidden"))) void wrap_arc() {
     );
 }
 
-// dlsym interposer: when libAlgoInterface resolves ARC_Turbo_RAW_Process, hand back the
-// wrapper so the engine stores wrap_arc (which repairs the structs before each call).
+// Family C-2: same trampoline shape as wrap_arc, for ARC_TFRSN_Process (super-night). Repairs the
+// ArcSoft input structs (orig x1/x2/x3) before tail-calling the real engine. repair_struct is a
+// no-op on non-garbage / unmapped pointers, so repairing all three args is safe even if super-night
+// uses fewer than three struct args.
+extern "C" __attribute__((naked, visibility("hidden"))) void wrap_arc_tfrsn() {
+    asm volatile(
+        "stp x0, x1, [sp, #-0x50]!\n"
+        "stp x2, x3, [sp, #0x10]\n"
+        "stp x4, x5, [sp, #0x20]\n"
+        "stp x6, x7, [sp, #0x30]\n"
+        "str x30,    [sp, #0x40]\n"
+        "mov x0, x1\n"                 // aps_repair_structs(orig x1, orig x2, orig x3)
+        "mov x1, x2\n"
+        "mov x2, x3\n"
+        "bl  aps_repair_structs\n"
+        "ldr x30,    [sp, #0x40]\n"
+        "ldp x6, x7, [sp, #0x30]\n"
+        "ldp x4, x5, [sp, #0x20]\n"
+        "ldp x2, x3, [sp, #0x10]\n"
+        "ldp x0, x1, [sp], #0x50\n"
+        "adrp x16, aps_real_tfrsn\n"
+        "ldr  x16, [x16, #:lo12:aps_real_tfrsn]\n"
+        "br   x16\n"
+    );
+}
+
+// dlsym interposer: when libAlgoInterface resolves ARC_Turbo_RAW_Process / ARC_TFRSN_Process, hand
+// back the wrapper so the engine stores the trampoline (which repairs the structs before each call).
 static void* wrap_dlsym(void* handle, const char* symbol) {
     void* res = g_real_dlsym(handle, symbol);
     if (symbol && res && strcmp(symbol, ARC_SYMBOL) == 0) {
         aps_real_arc = res;
         ALOGI("intercepted dlsym(%s) -> wrap_arc (real=%p)", symbol, res);
         return (void*)wrap_arc;
+    }
+    if (symbol && res && strcmp(symbol, ARC_SYMBOL_TFRSN) == 0) {
+        aps_real_tfrsn = res;
+        ALOGI("intercepted dlsym(%s) -> wrap_arc_tfrsn (real=%p)", symbol, res);
+        return (void*)wrap_arc_tfrsn;
     }
     return res;
 }
@@ -257,6 +352,70 @@ static void* wrap_copymeta(const void* src) {
         return nullptr;
     }
     return g_real_copymeta(src);
+}
+
+// ── Family B (WORKAROUND): null-safe strlen for TurboRaw::setProcessOtherParams ─────────────
+// BASELINE FIX (preferred): publish the OEM IPE TurboHDR vendor metadata tag (tag base ~0x4d78) in
+// the per-frame result metadata from the camera provider — same unpublished-OEM-tag family as
+// hdr_detected rc=-2 (project memory root-aec-stats-hdr-detected-missing). Once published,
+// TurboRaw::parseTurboHdrInfo stores it into field_0x4d88 and strlen receives a valid pointer.
+// WORKAROUND: on LOS the tag is unpublished, so parseTurboHdrInfo cbz-skips the store and
+// field_0x4d88 stays null; setProcessOtherParams then unconditionally calls strlen(null) -> SIGSEGV
+// (tombstone_32). We interpose the strlen@LIBC JUMP_SLOT in libAlgoInterface and return 0 for a null
+// arg, so setProcessOtherParams proceeds with a zero-length "other params" string (ArcSoft engine
+// defaults) instead of crashing. Minimal/fast: null-check + tail-call the real strlen — this hooks
+// ALL strlen calls inside libAlgoInterface, so the non-null fast path must stay a plain tail-call.
+static size_t wrap_strlen(const char* s) {
+    if (__builtin_expect(s == nullptr, 0)) {
+        ALOGE("strlen: null intercepted (TurboRaw::field_0x4d88 unset — OEM IPE TurboHDR tag "
+              "unpublished); returning 0 (ArcSoft defaults)");
+        return 0;
+    }
+    return g_real_strlen(s);
+}
+
+// ── Family A (WORKAROUND skeleton, NEEDS-PROBE): BasicTone saveOutImg write to read-only page ──
+// BASELINE FIX (preferred): repair AHardwareBuffer_lock on A16/Gralloc5/mapper@4 so the OGL output
+// buffer gets a valid WRITABLE CPU VA written into Image->field_0x38 (same mapper@4 root as the
+// gralloc contiguity family). Then saveOutImg's in-place P010 LSB->MSB NEON store lands in RAM.
+// WORKAROUND: when the lock fails, field_0x38 retains a stale stack VA that happens to point into
+// the PROT_READ .text of an APK-mapped .so -> saveOutImg's STR faults (SEGV_ACCERR, tombstone_44).
+// The JPEG is ALREADY saved before this post-process step, so skipping it loses nothing. We guard
+// OGLBasicToneProcess: if the Image's pixel-buffer VA is mapped but NOT writable, return early.
+//
+// NEEDS-PROBE (two unknowns, lead to run a frida probe on OGLBasicToneProcess):
+//   (1) Resolution path: "OGLBasicToneProcess" is NOT a dlsym-by-name string in libAlgoProcess.so
+//       (it is a global export of libBasicTonePhoto.so @0x53984, reached via PLT/DT_NEEDED). So the
+//       wrap_algoproc_dlsym name-match below will NOT fire as written; the real hook vector must be
+//       confirmed (likely a GOT JUMP_SLOT for OGLBasicToneProcess in libAlgoProcess once the actual
+//       linkage is known, OR a different dlsym symbol). Until then this hook is INERT (safe no-op).
+//   (2) Image* arg offset inside the OGLContext (doc 28 assumes ctx+0x10 from the processCore
+//       `ldr x21,[x0,#0x10]` pattern) — confirm before trusting the guard.
+static int wrap_ogltone(void* ctx) {
+    if (ctx) {
+        void* img = *(void**)((uint8_t*)ctx + 0x10);   // NEEDS-PROBE: ctx->Image* offset
+        if (img) {
+            uint64_t buf_va = *(uint64_t*)((uint8_t*)img + 0x38);
+            if (buf_va && !mapping_is_writable(buf_va)) {
+                ALOGE("OGLBasicToneProcess: Image->field_0x38 %p mapped but NOT writable "
+                      "(AHardwareBuffer_lock failed on Gralloc5/mapper@4) -> skip saveOutImg "
+                      "(JPEG already saved)", (void*)buf_va);
+                return -1;   // caller already saved the JPEG; this is a post-process step
+            }
+        }
+    }
+    return g_real_ogltone(ctx);
+}
+
+// libAlgoProcess dlsym interposer (Family A skeleton). INERT until the probe confirms the symbol.
+static void* wrap_algoproc_dlsym(void* handle, const char* symbol) {
+    void* res = g_real_algoproc_dlsym(handle, symbol);
+    if (symbol && res && strcmp(symbol, OGLTONE_SYMBOL) == 0) {
+        g_real_ogltone = (ogltone_fn_t)res;
+        ALOGI("intercepted dlsym(%s) -> wrap_ogltone (real=%p)", symbol, res);
+        return (void*)wrap_ogltone;
+    }
+    return res;
 }
 
 // ── locate the load bias of a named DT_NEEDED object via dl_iterate_phdr ───────────────────
@@ -323,7 +482,32 @@ static bool try_install() {
             }
         }
     }
-    return g_done_p010 && g_done_dlsym && g_done_copymeta;
+    if (!g_done_strlen) {                                   // Family B: null-safe strlen
+        uintptr_t base = module_base(LIB_INTERFACE);
+        if (base) {
+            void* old = nullptr;
+            if (got_redirect(base + STRLEN_GOT_OFF, (void*)wrap_strlen, &old)) {
+                g_real_strlen = (strlen_fn_t)old;
+                g_done_strlen = true;
+                ALOGI("hooked strlen GOT in libAlgoInterface @%p (real=%p)",
+                      (void*)(base + STRLEN_GOT_OFF), old);
+            }
+        }
+    }
+    if (!g_done_algoproc_dlsym) {                            // Family A skeleton (INERT, needs-probe)
+        uintptr_t base = module_base(LIB_PROCESS);
+        if (base) {
+            void* old = nullptr;
+            if (got_redirect(base + ALGOPROC_DLSYM_GOT_OFF, (void*)wrap_algoproc_dlsym, &old)) {
+                g_real_algoproc_dlsym = (dlsym_fn_t)old;
+                g_done_algoproc_dlsym = true;
+                ALOGI("hooked dlsym GOT in libAlgoProcess @%p (real=%p) [Family A skeleton]",
+                      (void*)(base + ALGOPROC_DLSYM_GOT_OFF), old);
+            }
+        }
+    }
+    return g_done_p010 && g_done_dlsym && g_done_copymeta &&
+           g_done_strlen && g_done_algoproc_dlsym;
 }
 
 // Fallback poller: libAlgoInterface may load after us (dlopen'd post-cap). Retry every 25ms
