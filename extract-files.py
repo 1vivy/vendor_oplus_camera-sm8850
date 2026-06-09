@@ -1660,6 +1660,53 @@ def blob_fixup_oplus_camera_framework_shims(ctx, file, file_path, *args, tmp_dir
             smali.write_text(fixed, encoding='utf-8')
 
 
+def blob_fixup_oplus_camera_typeface_default(ctx, file, file_path, *args, tmp_dir=None, **kwargs):
+    # TypeFaceUtil.<font>(Context) -> return Typeface.DEFAULT.
+    #
+    # On the LOS port, OnePlus' framework font-config extension is absent:
+    # OplusBaseConfiguration.mOplusExtraConfiguration is null. TypeFaceUtil's font method
+    # reads `((OplusBaseConfiguration) cfg).mOplusExtraConfiguration.mFontVariationSettings`
+    # inside a try that only catches NoSuchFieldError/NoSuchMethodError -> the NPE escapes and
+    # crashes the app whenever a dynamically-inflated OplusTextView/HintTextView is created
+    # (AI scene hint, zoom/capture hints via HintManager, face-retouch "Natural" hint, ...).
+    # The method already initialises its result to Typeface.DEFAULT and is designed to fall
+    # back; we make it return Typeface.DEFAULT unconditionally (cosmetic on LOS: the Oplus
+    # custom font isn't installed, so the system default is the correct, stock-equivalent
+    # degradation). Same fix both koaaN and spkal01/dodge ship as
+    # `0001-Use-default-font-instead-of-OPlus-specific-ones.patch` (their R8 names differ).
+    #
+    # Anchored by SIGNATURE + body content (the mOplusExtraConfiguration read), NOT the R8
+    # method name, so it survives re-obfuscation across APK versions.
+    if tmp_dir is None:
+        return
+
+    method_re = re.compile(
+        r'(\.method [^\n]*\(Landroid/content/Context;\)Landroid/graphics/Typeface;\n)'
+        r'(.*?)'
+        r'(\n\.end method\n)',
+        re.DOTALL,
+    )
+
+    def _repl(m):
+        if 'OplusBaseConfiguration;->mOplusExtraConfiguration' not in m.group(2):
+            return m.group(0)  # not the custom-font method
+        return (
+            m.group(1)
+            + '    .registers 1\n\n'
+            + '    sget-object p0, Landroid/graphics/Typeface;->DEFAULT:Landroid/graphics/Typeface;\n\n'
+            + '    return-object p0'
+            + m.group(3)
+        )
+
+    for smali in Path(tmp_dir).glob('smali*/**/*.smali'):
+        data = smali.read_text(encoding='utf-8')
+        if 'OplusBaseConfiguration;->mOplusExtraConfiguration' not in data:
+            continue
+        fixed = method_re.sub(_repl, data)
+        if fixed != data:
+            smali.write_text(fixed, encoding='utf-8')
+
+
 def blob_fixup_aiunit_authorize_camera(ctx, file, file_path, *args, tmp_dir=None, **kwargs):
     # AIUnit gates every client through AIUnitServiceBinder.authorize(ParamPackage):
     # it computes an "authorized" boolean in v9, and if v9 == 0 returns
@@ -1980,6 +2027,7 @@ blob_fixups: blob_fixups_user_type = {
         .call(blob_fixup_opluscamera_uses_library)
         .call(blob_fixup_oplus_camera_system_properties)
         .call(blob_fixup_oplus_camera_framework_shims)
+        .call(blob_fixup_oplus_camera_typeface_default)
         .apktool_pack()
         .stripzip(),
     'system_ext/priv-app/AIUnit/AIUnit.apk': blob_fixup()
