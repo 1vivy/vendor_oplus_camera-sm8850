@@ -1,3 +1,4 @@
 type public_adsprpcd_file, file_type;
-type proc_ufs_file, file_type;
-typeattribute proc_ufs_file proc_type;
+# proc_ufs_file removed — a new proc_type that tripped `neverallow domain proc_type
+# dir write` (init/vendor_init hold broad dir perms over its attribute set). See
+# opluscamera_app.te. Re-add via an existing platform proc type if ever needed.

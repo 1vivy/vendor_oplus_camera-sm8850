@@ -1,1 +1,2 @@
-genfscon proc /devinfo/ufs u:object_r:proc_ufs_file:s0
+# (proc /devinfo/ufs genfscon removed — proc_ufs_file dropped; tripped a platform
+#  neverallow. See sepolicy/vendor/file.te + opluscamera_app.te.)

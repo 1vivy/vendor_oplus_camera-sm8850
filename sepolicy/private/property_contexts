@@ -6,6 +6,14 @@ persist.sys.camera.                 u:object_r:exported_system_prop:s0
 persist.ipe.debug                   u:object_r:exported_system_prop:s0
 oplus.camera.packname               u:object_r:exported_system_prop:s0
 oplus.camera.orms                   u:object_r:exported_system_prop:s0
+# OEM read-only system/product props (moved from vendor/property_contexts — a vendor
+# context may only label vendor.-prefixed props; these are ro.oplus.* system props).
+ro.oplus.camera.                    u:object_r:exported_system_prop:s0
+ro.oplus.system.camera.name         u:object_r:exported_system_prop:s0
+ro.oplus.key.actionbutton           u:object_r:exported_system_prop:s0
+ro.oplus.flashlight.rio.switch      u:object_r:exported_system_prop:s0
+ro.oplus.market.                    u:object_r:exported_system_prop:s0
+ro.oplus.radio.                     u:object_r:exported_system_prop:s0
 
 # Region
 persist.sys.oppo.region             u:object_r:exported_system_prop:s0

@@ -8,12 +8,17 @@ allow opluscamera_app vendor_data_file:dir  { read open search write add_name re
 allow opluscamera_app vendor_data_file:file { read open write create unlink getattr rename setattr };
 allow opluscamera_app vendor_camera_update_data_file:file { read open write create unlink getattr rename setattr };
 allow opluscamera_app vendor_camera_update_data_file:dir { read open search write add_name remove_name create getattr rename setattr reparent rmdir };
-allow opluscamera_app vendor_xdsp_device:file { read open write create unlink getattr };
-allow opluscamera_app vendor_xdsp_device:chr_file { read open write create unlink getattr ioctl };
-allow opluscamera_app vendor_xdsp_device:dir { read open search write add_name remove_name create getattr };
+# vendor_xdsp_device: the platform neverallows (domain.te:95,97) reserve the xDSP
+# char device for HAL domains — an app domain may NOT access it (build-time
+# neverallow, fails secilc). The camera app reaches the DSP through
+# hal_camera_default; no direct app access. (OOS passes the same neverallow, so
+# this is OOS-faithful — the stock camera app does not touch xdsp directly either.)
 allow opluscamera_app vendor_qdsp_device:file { read open write create unlink getattr };
 allow opluscamera_app vendor_qdsp_device:dir { read open search write add_name remove_name create getattr };
-allow opluscamera_app proc_ufs_file:file { read open write create getattr };
+# proc_ufs_file (/proc/devinfo/ufs) removed: it was an ours-only proc_type that, by
+# being dir-attributed to init/vendor_init, tripped `neverallow domain proc_type dir
+# write` at secilc. Non-essential UFS-info read; if a denial appears under permissive,
+# re-add using an existing platform proc type, not a new proc_type.
 allow opluscamera_app opluscamera_app_data_file:file { read open write create unlink getattr rename setattr };
 allow opluscamera_app opluscamera_app_data_file:dir { read open search write add_name remove_name create getattr rename setattr reparent rmdir };
 
@@ -48,7 +53,11 @@ allow opluscamera_app display_service:service_manager find;
 allow opluscamera_app surfaceflinger_service:service_manager find;
 allow opluscamera_app package_native_service:service_manager find;
 allow opluscamera_app permission_service:service_manager find;
-allow opluscamera_app vendor_hal_offlinecamera_service:service_manager find;
+# vendor_hal_offlinecamera_service find: REMOVED — platform neverallow forbids an app
+# domain finding the offline-camera HAL service, AND it is redundant: we use the
+# coherent SAT-Fusion + AIDL IOfflineCameraService path (identity-stamped), never the
+# HIDL OfflineCameraClient (doc 20 §7b: stock never takes it). The HAL is reached by
+# hal_camera_default, not the app.
 allow opluscamera_app hal_system_suspend_service:service_manager find;
 dontaudit opluscamera_app vendor_hal_qspmhal_service:service_manager find;
 
