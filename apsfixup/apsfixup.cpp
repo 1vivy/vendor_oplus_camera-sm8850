@@ -57,8 +57,14 @@
 #include <log/log.h>
 
 // ── sm8850 offsets ──────────────────────────────────────────────────────────────────────
-static constexpr uintptr_t P010_GOT_OFF  = 0x689ba8;   // libAlgoProcess.so
-static constexpr uintptr_t DLSYM_GOT_OFF = 0x1bb67c8;  // libAlgoInterface.so
+static constexpr uintptr_t P010_GOT_OFF     = 0x689ba8;   // libAlgoProcess.so p010LSB2MSBNeon GOT
+static constexpr uintptr_t DLSYM_GOT_OFF    = 0x1bb67c8;  // libAlgoInterface.so dlsym GOT
+// NB: runtime (file) offsets, image base 0 — same convention as P010_* above. Ghidra's default
+// ELF load base is 0x100000, so SUBTRACT 0x100000 from any address read off the Ghidra listing.
+// Verified via `readelf -rsW libAlgoProcess.so`:
+//   R_AARCH64_JUMP_SLOT @ 0x686ee8 -> _ZN7android11APSMetadata12copyMetadataEPK15camera_metadata @ 0x292960
+static constexpr uintptr_t COPYMETA_GOT_OFF  = 0x686ee8;  // libAlgoProcess.so APSMetadata::copyMetadata JUMP_SLOT
+static constexpr uintptr_t COPYMETA_FUNC_OFF = 0x292960;  // libAlgoProcess.so APSMetadata::copyMetadata body
 static constexpr const char* LIB_PROCESS   = "libAlgoProcess.so";
 static constexpr const char* LIB_INTERFACE = "libAlgoInterface.so";
 static constexpr const char* ARC_SYMBOL    = "ARC_Turbo_RAW_Process";
@@ -74,8 +80,13 @@ static p010_fn_t  g_real_p010  = nullptr;
 extern "C" __attribute__((visibility("hidden"), used)) void* aps_real_arc = nullptr;
 static dlsym_fn_t g_real_dlsym = nullptr;
 
-static bool g_done_p010  = false;
-static bool g_done_dlsym = false;
+// copyMetadata(camera_metadata const*) -> camera_metadata* (heap copy, or null)
+using copymeta_fn_t = void* (*)(const void*);
+static copymeta_fn_t g_real_copymeta = nullptr;
+
+static bool g_done_p010     = false;
+static bool g_done_dlsym    = false;
+static bool g_done_copymeta = false;
 
 // ── /proc/self/maps range lookup: the mapping [base,base+size) containing addr ─────────────
 static bool range_of(uint64_t addr, uint64_t* base, uint64_t* size) {
@@ -213,6 +224,41 @@ static void wrap_p010(uint16_t* dst, uint16_t* src,
     g_real_p010(dst, src, w2, w3, w4, w5);
 }
 
+// ── APSMetadata::copyMetadata UAF guard (deferred quick-jpeg path) ─────────────────────────
+// On A16 the OEM deferred-job pipeline (OplusCamera "quick jpeg") runs slower than the OEM's
+// fixed per-frame metadata/ImageReader window, so under back-to-back captures a request's
+// camera_metadata can be evicted/unmapped before DeferJob::startCapture synchronously copies it
+// -> APSMetadata::copyMetadata derefs a freed pointer (reads the header at +0xc/+0x18) -> SIGSEGV
+// (APSMetadata::copyMetadata <- DeferJob::startCapture, fault in com.oplus.camera). We interpose
+// the copyMetadata GOT slot and validate the source is mapped + has a sane camera_metadata header
+// before the real copy. On a freed/garbage source we return null — which is exactly what the real
+// copyMetadata returns for an empty/!valid source, so every caller already handles it: that one
+// capture skips its deferred enhancement (the JPEG itself is already saved) instead of crashing
+// the app. No-op on a live pointer, i.e. the normal single-capture case copies fully as before.
+// This keeps the OEM deferred quick-jpeg feature ENABLED (no quick.jpeg.support=0 disable) and
+// crash-safe. camera_metadata header: +0x0c entry_count, +0x18 data_capacity (read by copyMetadata
+// via get_camera_metadata_size).
+static void* wrap_copymeta(const void* src) {
+    if (src == nullptr) return g_real_copymeta(src);   // real returns null for null, callers handle it
+    // Strip the AArch64 top-byte pointer tag (Scudo/MTE; e.g. 0xb4..) before the /proc/maps lookup,
+    // which lists canonical (untagged) VAs. Hardware TBI ignores the tag on deref, so the real
+    // copyMetadata still gets the original tagged pointer below.
+    uint64_t va = (uint64_t)src & 0x00ffffffffffffffULL;
+    uint64_t mb, ms;
+    if (!range_of(va, &mb, &ms) || va + 0x20 > mb + ms) {
+        ALOGE("copyMetadata: source %p unmapped/truncated (deferred metadata evicted) -> null", src);
+        return nullptr;
+    }
+    uint32_t entry_count = *(const uint32_t*)((const uint8_t*)src + 0x0c);
+    uint32_t data_cap    = *(const uint32_t*)((const uint8_t*)src + 0x18);
+    if (entry_count > 0x100000 || data_cap > 0x4000000) {   // > 1M entries / 64 MB data == garbage
+        ALOGE("copyMetadata: source %p insane header (entries=%u data=%u) -> null",
+              src, entry_count, data_cap);
+        return nullptr;
+    }
+    return g_real_copymeta(src);
+}
+
 // ── locate the load bias of a named DT_NEEDED object via dl_iterate_phdr ───────────────────
 struct find_ctx { const char* name; uintptr_t base; };
 static int find_cb(struct dl_phdr_info* info, size_t, void* data) {
@@ -255,7 +301,29 @@ static bool try_install() {
             }
         }
     }
-    return g_done_p010 && g_done_dlsym;
+    if (!g_done_copymeta) {
+        uintptr_t base = module_base(LIB_PROCESS);
+        if (base) {
+            // The copyMetadata slot is a data pointer the loader/init resolves to base+FUNC_OFF.
+            // As a DT_NEEDED of libAlgoProcess we may run before that slot is resolved (we have
+            // observed it == 0 at our ctor time), so DO NOT capture *slot as "real" — it would be
+            // null and wrap_copymeta would call 0x0. Wait (via the poller) until the slot actually
+            // holds the real function, then redirect and pin g_real_copymeta to the known body
+            // address. This also means we never clobber an unresolved slot the loader later fills.
+            void** slot = (void**)(base + COPYMETA_GOT_OFF);
+            void* expected_real = (void*)(base + COPYMETA_FUNC_OFF);
+            if (*slot == expected_real) {
+                void* old = nullptr;
+                if (got_redirect(base + COPYMETA_GOT_OFF, (void*)wrap_copymeta, &old)) {
+                    g_real_copymeta = (copymeta_fn_t)expected_real;
+                    g_done_copymeta = true;
+                    ALOGI("hooked APSMetadata::copyMetadata GOT @%p (real=%p)",
+                          (void*)(base + COPYMETA_GOT_OFF), expected_real);
+                }
+            }
+        }
+    }
+    return g_done_p010 && g_done_dlsym && g_done_copymeta;
 }
 
 // Fallback poller: libAlgoInterface may load after us (dlopen'd post-cap). Retry every 25ms
