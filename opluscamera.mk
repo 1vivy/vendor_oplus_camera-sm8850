@@ -76,6 +76,22 @@ PRODUCT_PRODUCT_PROPERTIES += \
     persist.logd.log.load.vendor.qti.camera.provider-service_64.lower_limit=500 \
     persist.logd.log.load.vendor.qti.camera.provider-service_64.threshold=400000 \
     persist.logd.log.load.vendor.qti.camera.provider-service_64.upper_limit=1500 \
+    persist.camera.override_enable=true \
+    persist.camera.override_preview_hdr_support=false \
+
+# Force the preview to render SDR (fix the over-exposed/orange/blown-out preview on the
+# .201 app, 6.070.71). The app puts the preview on an HDR (BT2020_HLG) SurfaceView with a
+# 5.0 HDR/SDR headroom (PreviewHDRControl), but the LOS panel is SRGB with no OPlus HDR
+# display/tonemap path -> the HLG layer composites ~5x too bright. PreviewHDRControl reads
+# its capability `c` from CameraConfig("com.oplus.camera.preview.hdr.support"), overridable
+# by `persist.camera.override_preview_hdr_support` ONLY when `persist.camera.override_enable`
+# is set. Forcing c=false keeps the preview SurfaceView sRGB (numHdrLayers 0) = matches the
+# correct 6.106 always-SDR preview. Verified safe: `override_enable` is read ONLY in
+# PreviewHDRControl and gates ONLY the preview_hdr_support override (the other override_*
+# props are read unconditionally and default to their normal values), so it has no other
+# side effects. Confirmed on-device (preview matches JPEG, numHdrLayers 1->0). See
+# docs/rearch/29-preview-hdr-sdr.md. Real OOS fix (follow-up) = port the OPlus HDR display
+# path to LOS.
 
 # Photo
 $(call soong_config_set,camera,package_name,com.oplus.packageName)
