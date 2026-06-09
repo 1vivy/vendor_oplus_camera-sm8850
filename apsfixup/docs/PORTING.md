@@ -47,12 +47,19 @@ Static RE this session could not cleanly pin the anchor: the struct is filled by
 too mangled (Ghidra recovered 19 params) to read the field offsets confidently. **However**, our
 `libarcsoft_turbo_raw.so` is **byte-identical to stock** (md5 `0c8775f4…`) and both OP13/OP15 ship
 the same A16 ArcSoft Turbo-RAW SDK vintage, so the struct ABI is very likely identical to dodge.
-**Confirm on device with the frida probe below before dropping the binary geometry patch.**
+**Confirm on device with the frida probe below; only the cosmetic chroma-pitch correction is at
+stake — the crash-fix itself is offset-agnostic.**
 
 ## Device validation (THE acceptance test)
 
-This shim and the binary `min()` geometry patch (`f3f372e`) fix the SAME bug. Keep the binary
-patch as fallback; validate the shim, then drop the binary patch.
+libapsfixup is the SOLE in-tree P010 fix. The historical binary `min()`/described-height patch
+(`f3f372e`) was a MANUAL on-device patch from a prior live session — applied to a deployed
+`libAlgoProcess.so` downstream of extraction (see docs/rearch/16,20) and **never committed to this
+tree** (no extract-files fixup applies it). So there is no in-tree fallback: libapsfixup must work
+on a real build, and it is built to. Its crash-prevention (chroma-ptr + p010-length corrections) is
+OFFSET-AGNOSTIC (garbage-signature scanned), so it prevents the OOB regardless of the
+MEDIUM-confidence `+0x60/+0x64` pitch anchor; only chroma COLOR depends on that pitch offset.
+**Residual risk if the pitch anchor is wrong = a cosmetic green/garbage chroma tint, NOT a crash.**
 
 1. Build + flash a userdebug image with `libapsfixup` packaged (Phase 2 wiring).
 2. `adb root` (frida needs it), push frida-server, run `op_chroma_repair.js` (this dir,
@@ -65,8 +72,10 @@ patch as fallback; validate the shim, then drop the binary patch.
      pitch offsets, then update `repair_struct`'s `off == 0x40` / `+0x60` / `+0x64` constants.
 3. With the native shim in place (no frida), repeat the high-DR Auto/HDR capture: the p010 crash
    (`p010LSB2MSBNeon` in tombstones) must NOT recur and the JPEG must be sharp + correct color.
-4. Only after step 3 passes, remove the binary `min()`/described-height patch from
-   `libAlgoProcess.so` (revert `f3f372e`) and re-validate.
+4. (No tree action.) The prior-session manual `min()`/described-height on-device patch (`f3f372e`)
+   is not in this tree, so there is nothing to revert here — libapsfixup is the in-tree fix. If a
+   device blob was hand-patched in an earlier session, restore the stock `libAlgoProcess.so` so
+   libapsfixup is the only code correcting the geometry.
 
 ### Frida one-liners (quick offset checks on a stock/dev device)
 

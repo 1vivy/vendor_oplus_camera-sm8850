@@ -5,9 +5,11 @@ PRODUCT_PACKAGES += \
 # APS P010 plane-layout fix: first-party GOT-interposer shim (apsfixup/), installed to
 # /odm/lib64 and DT_NEEDED-injected into odm/lib64/libAlgoProcess.so via
 # device/oneplus/infiniti/extract-files.py (.add_needed) + exposed in
-# vendor/etc/public.libraries.txt via device/oneplus/sm8850-common/extract-files.py. Replaces
-# the fragile binary min()/described-height geometry patch (kept as fallback until the shim is
-# device-validated). See apsfixup/docs/PORTING.md.
+# vendor/etc/public.libraries.txt via device/oneplus/sm8850-common/extract-files.py. This is the
+# SOLE in-tree P010 fix — the historical binary min()/described-height patch (f3f372e) was a manual
+# on-device patch from a prior session, NOT committed to this tree. The shim's crash-prevention is
+# offset-agnostic; only cosmetic chroma color is gated on frida device-validation. See
+# apsfixup/docs/PORTING.md.
 PRODUCT_PACKAGES += \
     libapsfixup
 
