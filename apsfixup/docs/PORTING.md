@@ -25,14 +25,23 @@ length `w5 = (2/3·avail)/w4`. Keyed to the garbage-chroma signature → no-op o
 | `P010_GOT_OFF` (libAlgoProcess) | **`0x689ba8`** | `0x62db58` | `readelf -r` R_AARCH64_JUMP_SLOT for that symbol | **HIGH (static)** |
 | `DLSYM_GOT_OFF` (libAlgoInterface) | **`0x1bb67c8`** | `0x23c8c58` | `readelf -r` `dlsym@LIBC` JUMP_SLOT | **HIGH (static)** |
 | ARC dlsym symbol | `ARC_Turbo_RAW_Process` | (same) | exact string + `find ARC_Turbo_RAW_Process failed!! dlerror:%s` | **HIGH (static)** |
-| struct: luma/chroma/pitch[0]/pitch[1] | `+0x40 / +0x48 / +0x60 / +0x64` | (same) | inherited from dodge | **MEDIUM — needs frida** |
+| struct: luma/chroma/pitch[0]/pitch[1] | `+0x40 / +0x48 / +0x60 / +0x64` | (same) | inherited from dodge; independently re-derived on infiniti by koaaN (OP15InfinityX) — same offsets | **HIGH (cross-checked) — frida = confirmation** |
 
 Blobs: `libAlgoProcess.so` BuildID `82fe443b408f8ed027558b0d4ffb1500`,
 `libAlgoInterface.so` BuildID `ce6e40ca2e987fcc6da26930d84b0b2f`.
 Both are **BIND_NOW** (eager GOT) and the GOT slots are inside **PT_GNU_RELRO** → the mprotect
 RW/RO dance is required (handled by `got_redirect`).
 
-### Why the struct offsets are MEDIUM confidence
+### Confidence on the struct offsets — now HIGH (cross-checked)
+
+**Update (docs/rearch/23):** the `+0x40/+0x48/+0x60/+0x64` ArcSoft output-struct anchor is now
+**HIGH** confidence. koaaN's independent infiniti (sm8850) apsfixup re-derivation in the
+OP15InfinityX org pins the **same** struct field offsets (`+0x40` luma, `+0x48` chroma, `+0x60`
+pitch[0], `+0x64` pitch[1]; see their `apsfixup/docs/PORTING.md`). Two independent derivations on
+the same SoC/SDK vintage converging on the identical layout removes the prior "inherited from
+dodge, unverified on our blob" doubt. The frida probe below is now a **confirmation** step, not the
+only thing standing between us and trusting the shim's cosmetic chroma-pitch correction. (The
+crash-prevention was always offset-agnostic — see below.)
 
 `repair_struct` SCANS the passed struct (`0x00`..`0x78`, 8-byte stride) for the
 valid-luma(`0x76..`)/garbage-chroma(`0x77..`) signature, so the **chroma-pointer fix is
@@ -58,7 +67,7 @@ libapsfixup is the SOLE in-tree P010 fix. The historical binary `min()`/describe
 tree** (no extract-files fixup applies it). So there is no in-tree fallback: libapsfixup must work
 on a real build, and it is built to. Its crash-prevention (chroma-ptr + p010-length corrections) is
 OFFSET-AGNOSTIC (garbage-signature scanned), so it prevents the OOB regardless of the
-MEDIUM-confidence `+0x60/+0x64` pitch anchor; only chroma COLOR depends on that pitch offset.
+HIGH-confidence (cross-checked) `+0x60/+0x64` pitch anchor; only chroma COLOR depends on that pitch offset.
 **Residual risk if the pitch anchor is wrong = a cosmetic green/garbage chroma tint, NOT a crash.**
 
 1. Build + flash a userdebug image with `libapsfixup` packaged (Phase 2 wiring).
