@@ -1758,6 +1758,219 @@ def blob_fixup_oplus_camera_blur_npe_guard(ctx, file, file_path, *args, tmp_dir=
             smali.write_text(''.join(out), encoding='utf-8')
 
 
+def blob_fixup_oplus_camera_surface_transaction_getapply(ctx, file, file_path, *args, tmp_dir=None, **kwargs):
+    # SurfaceTransaction: add the missing getApply()I getter (return 0).
+    #
+    # The thumbnail -> in-app gallery "seamless" transition stalls (and the next
+    # capture then crashes on the un-restored preview surface) because the
+    # SeamlessAnimation builds its per-frame driver as
+    #   PropertyValuesHolder.ofInt("apply", new int[]{0})
+    # i.e. a SINGLE-value PVH. A single-value ofInt() animates from the property's
+    # CURRENT value (read reflectively via the getter getApply()I) to the supplied
+    # end value. com.oplus.camera.feature.integration.animation.SurfaceTransaction
+    # defines setApply()V and setApply(I)V but NO getApply()I, so the framework logs
+    #   W PropertyValuesHolder: Method getApply() with type null not found on target
+    #   class ...SurfaceTransaction
+    # and never drives the property -> setApply(int) is never called per frame ->
+    # SurfaceControl$Transaction.apply() never fires during the animation -> the
+    # reparented preview surface is left committed but un-animated and never restored
+    # (rd/l.c() restore is gated on the animation completing) -> hang + next-capture
+    # crash. Stock ships getApply() (the "apply" property is a frame-tick trigger: the
+    # int is ignored, setApply(int)/setApply() both just call transaction.apply()), so
+    # returning 0 is the correct OOS-baseline value, not a workaround.
+    #
+    # Anchored by the class signature + .source "SurfaceTransaction.java" (NOT an R8
+    # name; this class keeps its real name), appended once. Idempotent.
+    if tmp_dir is None:
+        return
+
+    class_sig = 'Lcom/oplus/camera/feature/integration/animation/SurfaceTransaction;'
+    method = (
+        '\n'
+        '.method public getApply()I\n'
+        '    .locals 1\n'
+        '\n'
+        '    const/4 v0, 0x0\n'
+        '\n'
+        '    return v0\n'
+        '.end method\n'
+    )
+
+    for smali in Path(tmp_dir).glob('smali*/**/*.smali'):
+        data = smali.read_text(encoding='utf-8')
+        if f'.class public {class_sig}' not in data:
+            continue
+        if '.source "SurfaceTransaction.java"' not in data:
+            continue
+        if '.method public getApply()I' in data:
+            continue  # already patched
+        smali.write_text(data.rstrip('\n') + '\n' + method, encoding='utf-8')
+
+
+def blob_fixup_oplus_camera_gallery_handoff(ctx, file, file_path, *args, tmp_dir=None, **kwargs):
+    # Thumbnail tap -> open com.oneplus.gallery on the captured photo.
+    #
+    # On-device frida + static trace established the REAL tap path (an earlier
+    # GalleryHelper-based attempt was dead code — the tap never enters GalleryHelper):
+    #   thumbnail onClick -> CameraUIManager.P9(View,Uri,String,Bitmap,I,I,rm/e)V
+    #   (the unique handler that logs "thumbnail_click").
+    # P9 builds an intent (action = VIEW only if eo/t1.a else REVIEW; package = eo/t1.a())
+    # but the launcher it calls (the 5-arg GalleryHelper.q) does NOT startActivity — it's a
+    # MediaMetadataRetriever helper. On stock the actual "slide into gallery" is an
+    # EMBEDDED INLINE render via the gallery-side SDK com.oplus.light.gallery.* / OliveView,
+    # which is ABSENT on LOS — so there is NO startActivity path for the tap at all (frida
+    # confirmed: tap fires neither GalleryHelper.g() nor any execStartActivity; it just
+    # opens the in-app review overlay, which the getApply fix made render cleanly).
+    #
+    # True embedded parity needs a gallery-side SDK port (documented as the deep follow-up).
+    # The achievable, reliable deliverable is a PLAIN full-screen launch: inject a
+    # self-contained startActivity(ACTION_VIEW, data=capturedUri, type=mime,
+    # setPackage("com.oneplus.gallery")) at P9's entry. com.oneplus.gallery /
+    # com.oppo.gallery3d.app.ViewGallery is the confirmed VIEW image/* handler (REVIEW is
+    # unregistered on this device).
+    #
+    # Switch: persist.sys.oplus.cam.plain_gallery (default TRUE = tap opens the gallery;
+    # `setprop persist.sys.oplus.cam.plain_gallery false` falls back to the in-app review).
+    # The swipe-up gesture (sd/d UpGestureDetector) review path is unaffected either way.
+    #
+    # Robustness: the patched class/method/field are all R8-obfuscated and differ across
+    # apk copies, so EVERYTHING is read dynamically from the same smali at fixup time —
+    # the file is found by .source "CameraUIManager.java"; P9 is the method whose body
+    # contains "thumbnail_click"; the owner class and the Activity field (this.<f>) are
+    # extracted from that file/method. A small static helper plainLaunchThumb(...)Z is
+    # appended to the class and invoked at P9 entry; if it launched it returns-void early,
+    # else P9 runs unchanged. Idempotent (skips if plainLaunchThumb already present).
+    if tmp_dir is None:
+        return
+
+    method_re = re.compile(
+        r'(?ms)^(\.method[^\n]*\n)(\s*\.(?:registers|locals) \d+\n)(.*?)^\.end method'
+    )
+    class_re = re.compile(r'^\.class[^\n]* (L[\w/$]+;)\s*$', re.MULTILINE)
+    # Activity field read off `this` (v0 after the entry param-copy); fall back to any.
+    act_v0_re = re.compile(r'iget-object \w+, v0, (L[\w/$]+;->\w+:Landroid/app/Activity;)')
+    act_any_re = re.compile(r'(L[\w/$]+;->\w+:Landroid/app/Activity;)')
+
+    for smali in Path(tmp_dir).glob('smali*/**/*.smali'):
+        data = smali.read_text(encoding='utf-8')
+        if '.source "CameraUIManager.java"' not in data:
+            continue
+        if 'plainLaunchThumb' in data:
+            continue  # already patched
+        cm = class_re.search(data)
+        if not cm:
+            continue
+        cls = cm.group(1)  # e.g. Lmm/i0;
+
+        # Locate P9 (the "thumbnail_click" handler) and extract the Activity field.
+        act_field = None
+        p9_match = None
+        for m in method_re.finditer(data):
+            if '"thumbnail_click"' in m.group(3):
+                p9_match = m
+                am = act_v0_re.search(m.group(3)) or act_any_re.search(m.group(3))
+                if am:
+                    act_field = am.group(1)
+                break
+        if p9_match is None or act_field is None:
+            continue
+
+        # P9 is .registers 25 -> params live in high registers (p0=v17, p2=v19, p3=v20).
+        # A non-range invoke-static can only address v0..v15, so copy p0/p2/p3 into the
+        # low locals v0/v1/v2 (move-object/from16 reaches high src) and invoke on those.
+        # v0/v1/v2 are immediately re-initialised by P9's own param-copy prologue, so
+        # clobbering them here is safe.
+        entry_call = (
+            '    move-object/from16 v0, p0\n'
+            '\n'
+            '    move-object/from16 v1, p2\n'
+            '\n'
+            '    move-object/from16 v2, p3\n'
+            '\n'
+            f'    invoke-static {{v0, v1, v2}}, {cls}->plainLaunchThumb({cls}Landroid/net/Uri;Ljava/lang/String;)Z\n'
+            '\n'
+            '    move-result v0\n'
+            '\n'
+            '    if-eqz v0, :cond_plain_thumb_off\n'
+            '\n'
+            '    return-void\n'
+            '\n'
+            '    :cond_plain_thumb_off\n'
+        )
+
+        helper = (
+            '\n'
+            f'.method public static plainLaunchThumb({cls}Landroid/net/Uri;Ljava/lang/String;)Z\n'
+            '    .locals 3\n'
+            '\n'
+            '    const-string v0, "persist.sys.oplus.cam.plain_gallery"\n'
+            '\n'
+            '    const/4 v1, 0x1\n'
+            '\n'
+            '    invoke-static {v0, v1}, Landroid/os/SystemProperties;->getBoolean(Ljava/lang/String;Z)Z\n'
+            '\n'
+            '    move-result v0\n'
+            '\n'
+            '    if-nez v0, :do_launch\n'
+            '\n'
+            '    const/4 v0, 0x0\n'
+            '\n'
+            '    return v0\n'
+            '\n'
+            '    :do_launch\n'
+            '    if-eqz p1, :no_launch\n'
+            '\n'
+            f'    iget-object v0, p0, {act_field}\n'
+            '\n'
+            '    if-eqz v0, :no_launch\n'
+            '\n'
+            '    new-instance v1, Landroid/content/Intent;\n'
+            '\n'
+            '    const-string v2, "android.intent.action.VIEW"\n'
+            '\n'
+            '    invoke-direct {v1, v2}, Landroid/content/Intent;-><init>(Ljava/lang/String;)V\n'
+            '\n'
+            '    invoke-virtual {v1, p1, p2}, Landroid/content/Intent;->setDataAndType(Landroid/net/Uri;Ljava/lang/String;)Landroid/content/Intent;\n'
+            '\n'
+            '    const-string v2, "com.oneplus.gallery"\n'
+            '\n'
+            '    invoke-virtual {v1, v2}, Landroid/content/Intent;->setPackage(Ljava/lang/String;)Landroid/content/Intent;\n'
+            '\n'
+            '    const/4 v2, 0x1\n'
+            '\n'
+            '    invoke-virtual {v1, v2}, Landroid/content/Intent;->addFlags(I)Landroid/content/Intent;\n'
+            '\n'
+            '    :try_start_0\n'
+            '    invoke-virtual {v0, v1}, Landroid/app/Activity;->startActivity(Landroid/content/Intent;)V\n'
+            '    :try_end_0\n'
+            '    .catch Ljava/lang/Exception; {:try_start_0 .. :try_end_0} :catch_0\n'
+            '\n'
+            '    const/4 v0, 0x1\n'
+            '\n'
+            '    return v0\n'
+            '\n'
+            '    :catch_0\n'
+            '    move-exception v1\n'
+            '\n'
+            '    const/4 v0, 0x0\n'
+            '\n'
+            '    return v0\n'
+            '\n'
+            '    :no_launch\n'
+            '    const/4 v0, 0x0\n'
+            '\n'
+            '    return v0\n'
+            '.end method\n'
+        )
+
+        # Insert the entry call right after P9's .registers/.locals directive.
+        new_p9 = p9_match.group(1) + p9_match.group(2) + '\n' + entry_call + p9_match.group(3) + '.end method'
+        data = data[:p9_match.start()] + new_p9 + data[p9_match.end():]
+        # Append the helper to the class.
+        data = data.rstrip('\n') + '\n' + helper
+        smali.write_text(data, encoding='utf-8')
+
+
 def blob_fixup_aiunit_authorize_camera(ctx, file, file_path, *args, tmp_dir=None, **kwargs):
     # AIUnit gates every client through AIUnitServiceBinder.authorize(ParamPackage):
     # it computes an "authorized" boolean in v9, and if v9 == 0 returns
@@ -2080,6 +2293,8 @@ blob_fixups: blob_fixups_user_type = {
         .call(blob_fixup_oplus_camera_framework_shims)
         .call(blob_fixup_oplus_camera_typeface_default)
         .call(blob_fixup_oplus_camera_blur_npe_guard)
+        .call(blob_fixup_oplus_camera_surface_transaction_getapply)
+        .call(blob_fixup_oplus_camera_gallery_handoff)
         .apktool_pack()
         .stripzip(),
     'system_ext/priv-app/AIUnit/AIUnit.apk': blob_fixup()
