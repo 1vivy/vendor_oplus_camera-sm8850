@@ -71,17 +71,22 @@ system/lib64/vendor.oplus.hardware.sendextcamcmd-V2-ndk.so:system_ext/lib64/vend
 # inference the OplusCamera "include AI" path consumes (and the gallery AI lane).
 # Re-signed with the platform key (no PRESIGNED) so it runs in the platform_app
 # domain that already carries the plugin-.so-exec grant (sepolicy/private/platform_app.te).
-# The apk bundles NO libs internally, so the 8 native libs ship to system_ext/lib64
-# (correct 64-bit inference) and are SYMLINK'd back into the app's nativeLibraryDir
-# (system_ext/priv-app/AIUnit/lib/arm64). MODULE_SUFFIX=_aiunit avoids module-name
-# clashes; DISABLE_DEPS skips the soname dep graph for these self-contained blobs.
+# The apk bundles NO libs internally, so the 7 Oplus-private native libs ship to
+# system_ext/lib64 (correct 64-bit inference) and are SYMLINK'd back into the app's
+# nativeLibraryDir (system_ext/priv-app/AIUnit/lib/arm64). MODULE_SUFFIX=_aiunit
+# avoids module-name clashes; DISABLE_DEPS skips the soname dep graph for these
+# self-contained blobs.
+# NOTE: libdmabufheap.so is intentionally NOT shipped here. It is a generic AOSP
+# platform library (LOS builds system/memory/libdmabufheap -> /system/lib64) and
+# AIUnit resolves it from the system linker namespace. The stock bundled copy is
+# also unusable as-is (corrupt ELF e_machine 0xbfef -> the dynamic linker rejects
+# it), and feeding it to extract_utils crashes makefile generation, so it is dropped.
 my_stock/priv-app/AIUnit/AIUnit.apk:system_ext/priv-app/AIUnit/AIUnit.apk
 my_stock/priv-app/AIUnit/lib/arm64/libaiunit_framework.so:system_ext/lib64/libaiunit_framework.so;MODULE_SUFFIX=_aiunit;DISABLE_DEPS;SYMLINK=system_ext/priv-app/AIUnit/lib/arm64/libaiunit_framework.so
 my_stock/priv-app/AIUnit/lib/arm64/libaiunit_framework_jni.so:system_ext/lib64/libaiunit_framework_jni.so;MODULE_SUFFIX=_aiunit;DISABLE_DEPS;SYMLINK=system_ext/priv-app/AIUnit/lib/arm64/libaiunit_framework_jni.so
 my_stock/priv-app/AIUnit/lib/arm64/libaiunit_sdk_core.so:system_ext/lib64/libaiunit_sdk_core.so;MODULE_SUFFIX=_aiunit;DISABLE_DEPS;SYMLINK=system_ext/priv-app/AIUnit/lib/arm64/libaiunit_sdk_core.so
 my_stock/priv-app/AIUnit/lib/arm64/libcore_tokenizers.so:system_ext/lib64/libcore_tokenizers.so;MODULE_SUFFIX=_aiunit;DISABLE_DEPS;SYMLINK=system_ext/priv-app/AIUnit/lib/arm64/libcore_tokenizers.so
 my_stock/priv-app/AIUnit/lib/arm64/libdatastore_shared_counter.so:system_ext/lib64/libdatastore_shared_counter.so;MODULE_SUFFIX=_aiunit;DISABLE_DEPS;SYMLINK=system_ext/priv-app/AIUnit/lib/arm64/libdatastore_shared_counter.so
-my_stock/priv-app/AIUnit/lib/arm64/libdmabufheap.so:system_ext/lib64/libdmabufheap.so;MODULE_SUFFIX=_aiunit;DISABLE_DEPS;SYMLINK=system_ext/priv-app/AIUnit/lib/arm64/libdmabufheap.so
 my_stock/priv-app/AIUnit/lib/arm64/libopencv_java4.so:system_ext/lib64/libopencv_java4.so;MODULE_SUFFIX=_aiunit;DISABLE_DEPS;SYMLINK=system_ext/priv-app/AIUnit/lib/arm64/libopencv_java4.so
 my_stock/priv-app/AIUnit/lib/arm64/libc++_shared.so:system_ext/lib64/libc++_shared.so;MODULE_SUFFIX=_aiunit;DISABLE_DEPS;SYMLINK=system_ext/priv-app/AIUnit/lib/arm64/libc++_shared.so
 
